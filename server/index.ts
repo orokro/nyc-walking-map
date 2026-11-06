@@ -409,6 +409,21 @@ app.post('/api/export/static', async (req, res) => {
   }
 });
 
-app.listen(PORT, '127.0.0.1', () => {
+// Serve built frontend (dist/) and public/data for standalone Electron / production mode
+const DIST_DIR = path.join(ROOT_DIR, 'dist');
+if (fs.existsSync(DIST_DIR)) {
+  app.use(express.static(DIST_DIR));
+}
+app.use(express.static(path.join(ROOT_DIR, 'public')));
+
+const server = app.listen(PORT, '127.0.0.1', () => {
   console.log(`[NYC Walks Server] Listening on http://127.0.0.1:${PORT}`);
+});
+
+server.on('error', (err: any) => {
+  if (err.code === 'EADDRINUSE') {
+    console.log(`[NYC Walks Server] Port ${PORT} already in use, reusing existing server.`);
+  } else {
+    console.error('[NYC Walks Server] Error:', err);
+  }
 });

@@ -5,7 +5,9 @@
   "description": "NYC 20-Mile Walks Tracker, Route Planner, Local Tile Cacher & Static Map Exporter",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "concurrently -k \"tsx server/index.ts\" \"vite\" \"electron .\"",
+    "start": "electron .",
+    "app": "vite build && electron .",
+    "dev": "concurrently -k \"vite\" \"electron .\"",
     "dev:web": "concurrently -k \"tsx server/index.ts\" \"vite\"",
     "server": "tsx server/index.ts",
     "build": "vite build",
