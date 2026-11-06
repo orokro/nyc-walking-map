@@ -42,10 +42,10 @@ export function resolveWalkColor(
 }
 
 export function resolveWalkWidth(walk: WalkItem, settings: WalkSettings): number {
-  if (walk.styleOverride?.width) return walk.styleOverride.width;
-  if (walk.status === 'planned') return settings.plannedWalkWidth || 4.0;
-  if (walk.isSubwayWalk) return settings.subwayWalkWidth || 3.2;
-  return settings.completedWalkWidth || 3.2;
+  if (walk.styleOverride?.width !== undefined) return walk.styleOverride.width;
+  if (walk.status === 'planned') return settings.plannedWalkWidth ?? 4.0;
+  if (walk.isSubwayWalk) return settings.subwayWalkWidth ?? 3.2;
+  return settings.completedWalkWidth ?? 3.2;
 }
 
 /**
@@ -157,6 +157,31 @@ export function generatePlannedMeasureOverlays(
     ticksGeoJSON: { type: 'FeatureCollection', features: tickFeatures },
     markersGeoJSON: { type: 'FeatureCollection', features: markerFeatures },
   };
+}
+
+/**
+ * Interpolates between two hex colors (#RRGGBB).
+ * t = 0 returns hexA (e.g. Hot color), t = 1 returns hexB (e.g. Cool final color).
+ */
+export function interpolateHexColor(hexA: string, hexB: string, t: number): string {
+  const clamped = Math.max(0, Math.min(1, t));
+  const parse = (h: string) => {
+    const clean = (h || '#0288D1').replace('#', '').trim();
+    if (clean.length !== 6) return [2, 136, 209];
+    return [
+      parseInt(clean.slice(0, 2), 16),
+      parseInt(clean.slice(2, 4), 16),
+      parseInt(clean.slice(4, 6), 16),
+    ];
+  };
+  const [r1, g1, b1] = parse(hexA);
+  const [r2, g2, b2] = parse(hexB);
+  const r = Math.round(r1 + (r2 - r1) * clamped);
+  const g = Math.round(g1 + (g2 - g1) * clamped);
+  const b = Math.round(b1 + (b2 - b1) * clamped);
+  return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b
+    .toString(16)
+    .padStart(2, '0')}`;
 }
 
 /**

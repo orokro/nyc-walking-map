@@ -105,7 +105,11 @@ export const App: React.FC = () => {
     mode: 'chronological',
     currentWalkIndex: 0,
     currentWalkProgress: 1,
+    cooldownProgress: 0,
     speed: 2,
+    hotFadeEnabled: true,
+    hotColor: '#FF1744',
+    fadeTailWalks: 8,
   });
 
   // Tile Cache & Static Export Status
@@ -120,6 +124,19 @@ export const App: React.FC = () => {
 
   const mapRef = useRef<maplibregl.Map | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const saveTimerRef = useRef<any>(null);
+
+  // Rotate map directly from UI controls without fighting map drag rotation
+  const rotateMapFromUI = useCallback((nextBearing: number, smooth = false) => {
+    setBearing(nextBearing);
+    const map = mapRef.current;
+    if (!map) return;
+    if (smooth) {
+      map.easeTo({ bearing: nextBearing, duration: 220 });
+    } else {
+      map.jumpTo({ bearing: nextBearing });
+    }
+  }, []);
 
   // Load initial data
   useEffect(() => {
@@ -192,26 +209,31 @@ export const App: React.FC = () => {
     initLoad();
   }, []);
 
-  // Persist dataset changes to local server
+  // Persist dataset changes to local server (instant in-memory update + debounced disk save)
   const persistDataset = useCallback(
-    async (nextDataset: WalkDataset) => {
+    (nextDataset: WalkDataset) => {
       setDataset(nextDataset);
       if (staticMode) return;
       setSaveStatus('saving');
-      try {
-        const res = await fetch('/api/walks', {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(nextDataset),
-        });
-        if (res.ok) {
-          setSaveStatus('saved');
-        } else {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+      saveTimerRef.current = setTimeout(async () => {
+        try {
+          const res = await fetch('/api/walks', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(nextDataset),
+          });
+          if (res.ok) {
+            setSaveStatus('saved');
+          } else {
+            setSaveStatus('error');
+          }
+        } catch {
           setSaveStatus('error');
         }
-      } catch {
-        setSaveStatus('error');
-      }
+      }, 300);
     },
     [staticMode]
   );
@@ -468,30 +490,81 @@ export const App: React.FC = () => {
       setAnimState((prev) => {
         if (!prev.playing) return prev;
         if (prev.mode === 'single') {
-          const nextProg = prev.currentWalkProgress + dt * 0.35 * prev.speed;
-          if (nextProg >= 1) {
-            return { ...prev, currentWalkProgress: 1, playing: false };
+          if (prev.currentWalkProgress < 1) {
+            const nextProg = prev.currentWalkProgress + dt * 0.35 * prev.speed;
+            if (nextProg >= 1) {
+              if (!prev.hotFadeEnabled) {
+                return { ...prev, currentWalkProgress: 1, cooldownProgress: 1, playing: false };
+              }
+              return { ...prev, currentWalkProgress: 1, cooldownProgress: 0 };
+            }
+            return { ...prev, currentWalkProgress: nextProg, cooldownProgress: 0 };
+          } else {
+            // Extra cooldown seconds at the end so the single walk fades from hot to cool
+            const nextCool = (prev.cooldownProgress || 0) + dt * 0.45;
+            if (nextCool >= 1) {
+              return { ...prev, cooldownProgress: 1, playing: false };
+            }
+            return { ...prev, cooldownProgress: nextCool };
           }
-          return { ...prev, currentWalkProgress: nextProg };
         } else {
           // Chronological replay across all completed walks
+          const lastIdx = Math.max(0, completedWalksChronological.length - 1);
+          const fadeWindow = Math.max(1, prev.fadeTailWalks || 8);
+
+          // If all walks have drawn, run the end cooldown phase so the last walks fade out
+          if (prev.currentWalkIndex >= lastIdx && prev.currentWalkProgress >= 1) {
+            if (!prev.hotFadeEnabled) {
+              return { ...prev, cooldownProgress: fadeWindow, playing: false };
+            }
+            // Advance cooldown at the walk rate (or ~2.5s minimum duration)
+            const coolRate = Math.max(2.2 * prev.speed, fadeWindow / 2.5);
+            const nextCool = (prev.cooldownProgress || 0) + dt * coolRate;
+            if (nextCool >= fadeWindow) {
+              return {
+                ...prev,
+                currentWalkIndex: lastIdx,
+                currentWalkProgress: 1,
+                cooldownProgress: fadeWindow,
+                playing: false,
+              };
+            }
+            return {
+              ...prev,
+              currentWalkIndex: lastIdx,
+              currentWalkProgress: 1,
+              cooldownProgress: nextCool,
+            };
+          }
+
           const nextProg = prev.currentWalkProgress + dt * 2.2 * prev.speed;
           if (nextProg >= 1) {
             if (prev.currentWalkIndex + 1 >= completedWalksChronological.length) {
+              if (!prev.hotFadeEnabled) {
+                return {
+                  ...prev,
+                  currentWalkIndex: lastIdx,
+                  currentWalkProgress: 1,
+                  cooldownProgress: fadeWindow,
+                  playing: false,
+                };
+              }
+              // Enter the post-animation cooldown phase while keeping playing = true
               return {
                 ...prev,
-                currentWalkIndex: completedWalksChronological.length - 1,
+                currentWalkIndex: lastIdx,
                 currentWalkProgress: 1,
-                playing: false,
+                cooldownProgress: 0,
               };
             }
             return {
               ...prev,
               currentWalkIndex: prev.currentWalkIndex + 1,
               currentWalkProgress: 0,
+              cooldownProgress: 0,
             };
           }
-          return { ...prev, currentWalkProgress: nextProg };
+          return { ...prev, currentWalkProgress: nextProg, cooldownProgress: 0 };
         }
       });
 
@@ -699,27 +772,28 @@ export const App: React.FC = () => {
             <button
               className="icon-btn"
               title="Reset North (0°)"
-              onClick={() => setBearing(0)}
+              onClick={() => rotateMapFromUI(0, true)}
             >
               <Compass
                 size={16}
-                style={{ transform: `rotate(${-bearing}deg)`, transition: 'transform 0.15s' }}
+                style={{ transform: `rotate(${-bearing}deg)`, transition: 'transform 0.1s' }}
               />
-              <span>{ ((bearing % 360) + 360) % 360 }°</span>
+              <span>{((Math.round(bearing) % 360) + 360) % 360}°</span>
             </button>
             <input
               type="range"
               min={-180}
               max={180}
-              value={bearing > 180 ? bearing - 360 : bearing}
-              onChange={(e) => setBearing(Number(e.target.value))}
+              step={1}
+              value={bearing > 180 ? bearing - 360 : bearing < -180 ? bearing + 360 : bearing}
+              onChange={(e) => rotateMapFromUI(Number(e.target.value), false)}
               className="bearing-slider"
               title="Rotate Map (-180° to +180°)"
             />
             <button
               className="mini-btn"
               title="Align with Manhattan Street Grid (+29°)"
-              onClick={() => setBearing(29)}
+              onClick={() => rotateMapFromUI(29, true)}
             >
               Manhattan 29°
             </button>
@@ -769,6 +843,7 @@ export const App: React.FC = () => {
                 mode: 'chronological',
                 currentWalkIndex: 0,
                 currentWalkProgress: 0,
+                cooldownProgress: 0,
               }))
             }
             title="Replay walks chronologically"
@@ -1790,7 +1865,7 @@ export const App: React.FC = () => {
             draftTitle={draftTitle}
             onUpdateDraftCoords={handleUpdateDraftCoords}
             bearing={bearing}
-            onBearingChange={setBearing}
+            onBearingChangeFromMap={setBearing}
             viewportFrame={viewportFrame}
             animState={animState}
             mapRefOut={mapRef}
@@ -1849,14 +1924,16 @@ export const App: React.FC = () => {
                 <button
                   className="insp-btn"
                   onClick={() =>
-                    setAnimState({
+                    setAnimState((prev) => ({
+                      ...prev,
                       active: true,
                       playing: true,
                       mode: 'single',
                       currentWalkIndex: 0,
                       currentWalkProgress: 0,
+                      cooldownProgress: 0,
                       speed: 1.5,
-                    })
+                    }))
                   }
                 >
                   <Play size={14} /> Animate Walk
@@ -1959,117 +2036,189 @@ export const App: React.FC = () => {
           {/* Chronological & Single-Walk Animation Studio Bar */}
           {animState.active && (
             <div className="floating-animation-bar">
-              <button
-                className="anim-play-btn"
-                onClick={() => setAnimState((p) => ({ ...p, playing: !p.playing }))}
-              >
-                {animState.playing ? <Pause size={16} /> : <Play size={16} />}
-              </button>
-
-              <button
-                className="anim-icon-btn"
-                title="Restart Animation"
-                onClick={() =>
-                  setAnimState((p) => ({
-                    ...p,
-                    currentWalkIndex: 0,
-                    currentWalkProgress: 0,
-                    playing: true,
-                  }))
-                }
-              >
-                <RotateCcw size={15} />
-              </button>
-
-              <div className="anim-scrubber-col">
-                {animState.mode === 'chronological' ? (
-                  <>
-                    <div className="anim-info-row">
-                      <span>
-                        <strong>
-                          Walk {animState.currentWalkIndex + 1} /{' '}
-                          {completedWalksChronological.length}
-                        </strong>
-                        :{' '}
-                        {completedWalksChronological[animState.currentWalkIndex]?.date || ''}{' '}
-                        {completedWalksChronological[animState.currentWalkIndex]?.title || ''}
-                      </span>
-                      <span className="anim-miles-counter">
-                        {completedWalksChronological
-                          .slice(0, animState.currentWalkIndex + 1)
-                          .reduce((acc, w, idx) => {
-                            if (idx === animState.currentWalkIndex) {
-                              return acc + w.distanceMiles * animState.currentWalkProgress;
-                            }
-                            return acc + w.distanceMiles;
-                          }, 0)
-                          .toFixed(1)}{' '}
-                        mi walked
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={Math.max(0, completedWalksChronological.length - 1)}
-                      value={animState.currentWalkIndex}
-                      onChange={(e) =>
-                        setAnimState((p) => ({
+              <div className="anim-top-row">
+                <button
+                  className="anim-play-btn"
+                  onClick={() =>
+                    setAnimState((p) => {
+                      const lastIdx = Math.max(0, completedWalksChronological.length - 1);
+                      const isAtEnd =
+                        p.mode === 'single'
+                          ? p.currentWalkProgress >= 1
+                          : p.currentWalkIndex >= lastIdx && p.currentWalkProgress >= 1;
+                      if (!p.playing && isAtEnd) {
+                        return {
                           ...p,
-                          currentWalkIndex: Number(e.target.value),
-                          currentWalkProgress: 1,
-                        }))
+                          currentWalkIndex: 0,
+                          currentWalkProgress: 0,
+                          cooldownProgress: 0,
+                          playing: true,
+                        };
                       }
-                    />
-                  </>
-                ) : (
+                      return { ...p, playing: !p.playing };
+                    })
+                  }
+                >
+                  {animState.playing ? <Pause size={16} /> : <Play size={16} />}
+                </button>
+
+                <button
+                  className="anim-icon-btn"
+                  title="Restart Animation"
+                  onClick={() =>
+                    setAnimState((p) => ({
+                      ...p,
+                      currentWalkIndex: 0,
+                      currentWalkProgress: 0,
+                      cooldownProgress: 0,
+                      playing: true,
+                    }))
+                  }
+                >
+                  <RotateCcw size={15} />
+                </button>
+
+                <div className="anim-scrubber-col">
+                  {animState.mode === 'chronological' ? (
+                    <>
+                      <div className="anim-info-row">
+                        <span>
+                          <strong>
+                            Walk {animState.currentWalkIndex + 1} /{' '}
+                            {completedWalksChronological.length}
+                          </strong>
+                          :{' '}
+                          {completedWalksChronological[animState.currentWalkIndex]?.date || ''}{' '}
+                          {completedWalksChronological[animState.currentWalkIndex]?.title || ''}
+                        </span>
+                        <span className="anim-miles-counter">
+                          {completedWalksChronological
+                            .slice(0, animState.currentWalkIndex + 1)
+                            .reduce((acc, w, idx) => {
+                              if (idx === animState.currentWalkIndex) {
+                                return acc + w.distanceMiles * animState.currentWalkProgress;
+                              }
+                              return acc + w.distanceMiles;
+                            }, 0)
+                            .toFixed(1)}{' '}
+                          mi walked
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={Math.max(0, completedWalksChronological.length - 1)}
+                        value={animState.currentWalkIndex}
+                        onChange={(e) =>
+                          setAnimState((p) => ({
+                            ...p,
+                            currentWalkIndex: Number(e.target.value),
+                            currentWalkProgress: 1,
+                            cooldownProgress: 0,
+                          }))
+                        }
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <div className="anim-info-row">
+                        <span>
+                          <strong>Single Walk Trace</strong>: {selectedWalk?.title || 'Walk'}
+                        </span>
+                        <span className="anim-miles-counter">
+                          {(
+                            (selectedWalk?.distanceMiles || 0) * animState.currentWalkProgress
+                          ).toFixed(2)}{' '}
+                          / {selectedWalk?.distanceMiles || 0} mi
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={Math.round(animState.currentWalkProgress * 100)}
+                        onChange={(e) =>
+                          setAnimState((p) => ({
+                            ...p,
+                            currentWalkProgress: Number(e.target.value) / 100,
+                            cooldownProgress: 0,
+                          }))
+                        }
+                      />
+                    </>
+                  )}
+                </div>
+
+                <select
+                  value={animState.speed}
+                  onChange={(e) =>
+                    setAnimState((p) => ({ ...p, speed: Number(e.target.value) }))
+                  }
+                  className="anim-speed-select"
+                  title="Playback Speed"
+                >
+                  <option value={0.5}>0.5x</option>
+                  <option value={1}>1x</option>
+                  <option value={2}>2x</option>
+                  <option value={5}>5x</option>
+                  <option value={12}>12x</option>
+                  <option value={25}>25x</option>
+                </select>
+
+                <button
+                  className="close-ss-btn"
+                  onClick={() => setAnimState((p) => ({ ...p, active: false, playing: false }))}
+                >
+                  <X size={15} />
+                </button>
+              </div>
+
+              {/* Hot-to-Cool Fade Controls Row */}
+              <div className="anim-hotfade-row">
+                <label className="hotfade-toggle">
+                  <input
+                    type="checkbox"
+                    checked={animState.hotFadeEnabled}
+                    onChange={(e) =>
+                      setAnimState((p) => ({ ...p, hotFadeEnabled: e.target.checked }))
+                    }
+                  />
+                  <span>Hot Trail Fade</span>
+                </label>
+
+                {animState.hotFadeEnabled && (
                   <>
-                    <div className="anim-info-row">
-                      <span>
-                        <strong>Single Walk Trace</strong>: {selectedWalk?.title || 'Walk'}
-                      </span>
-                      <span className="anim-miles-counter">
-                        {((selectedWalk?.distanceMiles || 0) * animState.currentWalkProgress).toFixed(
-                          2
-                        )}{' '}
-                        / {selectedWalk?.distanceMiles || 0} mi
-                      </span>
+                    <div className="hotfade-control">
+                      <span>Hot Color:</span>
+                      <input
+                        type="color"
+                        value={animState.hotColor}
+                        onChange={(e) =>
+                          setAnimState((p) => ({ ...p, hotColor: e.target.value }))
+                        }
+                        className="mini-color-input"
+                      />
                     </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      value={Math.round(animState.currentWalkProgress * 100)}
-                      onChange={(e) =>
-                        setAnimState((p) => ({
-                          ...p,
-                          currentWalkProgress: Number(e.target.value) / 100,
-                        }))
-                      }
-                    />
+
+                    <div className="hotfade-control fade-slider-wrap">
+                      <span>Cooldown Tail: {animState.fadeTailWalks} walks</span>
+                      <input
+                        type="range"
+                        min={1}
+                        max={40}
+                        step={1}
+                        value={animState.fadeTailWalks}
+                        onChange={(e) =>
+                          setAnimState((p) => ({
+                            ...p,
+                            fadeTailWalks: Number(e.target.value),
+                          }))
+                        }
+                      />
+                    </div>
                   </>
                 )}
               </div>
-
-              <select
-                value={animState.speed}
-                onChange={(e) =>
-                  setAnimState((p) => ({ ...p, speed: Number(e.target.value) }))
-                }
-                className="anim-speed-select"
-              >
-                <option value={0.5}>0.5x</option>
-                <option value={1}>1x</option>
-                <option value={2}>2x</option>
-                <option value={5}>5x</option>
-                <option value={12}>12x</option>
-              </select>
-
-              <button
-                className="close-ss-btn"
-                onClick={() => setAnimState((p) => ({ ...p, active: false, playing: false }))}
-              >
-                <X size={15} />
-              </button>
             </div>
           )}
         </main>

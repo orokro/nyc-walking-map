@@ -1,15 +1,15 @@
 {
   "version": 1,
-  "updatedAt": "2026-11-05T17:22:00Z",
+  "updatedAt": "2026-11-06T00:43:17.226Z",
   "settings": {
     "completedWalkColor": "#0288D1",
-    "completedWalkWidth": 3.2,
+    "completedWalkWidth": 2,
     "completedWalkOpacity": 0.9,
     "subwayWalkColor": "#0097A7",
     "subwayWalkWidth": 3.2,
     "subwayWalkOpacity": 0.9,
     "plannedWalkColor": "#FF6D00",
-    "plannedWalkWidth": 4.0,
+    "plannedWalkWidth": 4,
     "boroughLineColor": "#E65100",
     "boroughLineWidth": 2.5,
     "showBoroughLines": true,
@@ -18163,7 +18163,7 @@
       "manualLayerId": "",
       "originalFolder": "Subway Walks",
       "originalColor": "#0097A7",
-      "distanceMiles": 15.0,
+      "distanceMiles": 15,
       "notes": "",
       "coordinates": [
         [
@@ -62002,7 +62002,7 @@
       "manualLayerId": "",
       "originalFolder": "2022",
       "originalColor": "#0288D1",
-      "distanceMiles": 6.0,
+      "distanceMiles": 6,
       "notes": "",
       "coordinates": [
         [
@@ -116886,7 +116886,7 @@
     },
     {
       "id": "walk-0124",
-      "title": "Canarsie Peer\u00a0 & etc",
+      "title": "Canarsie Peer  & etc",
       "date": "2023-08-12",
       "year": "2023",
       "status": "completed",
@@ -147404,7 +147404,7 @@
       "manualLayerId": "",
       "originalFolder": "2024",
       "originalColor": "#0288D1",
-      "distanceMiles": 3.0,
+      "distanceMiles": 3,
       "notes": "",
       "coordinates": [
         [
@@ -267832,7 +267832,7 @@
       "title": "Douglastown Zig Zag",
       "date": "2026-10-31",
       "year": "2026",
-      "status": "planned",
+      "status": "completed",
       "isSubwayWalk": false,
       "manualLayerId": "",
       "originalFolder": "To Walk",
@@ -270095,7 +270095,7 @@
       "title": "Bayridge Zig Zag",
       "date": "2026-11-04",
       "year": "2026",
-      "status": "planned",
+      "status": "completed",
       "isSubwayWalk": false,
       "manualLayerId": "",
       "originalFolder": "To Walk",

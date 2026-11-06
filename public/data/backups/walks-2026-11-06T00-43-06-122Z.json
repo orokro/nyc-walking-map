@@ -1,9 +1,9 @@
 {
   "version": 1,
-  "updatedAt": "2026-11-05T23:03:45.472Z",
+  "updatedAt": "2026-11-06T00:43:04.109Z",
   "settings": {
     "completedWalkColor": "#0288D1",
-    "completedWalkWidth": 3.2,
+    "completedWalkWidth": 1.4,
     "completedWalkOpacity": 0.9,
     "subwayWalkColor": "#0097A7",
     "subwayWalkWidth": 3.2,
@@ -270095,7 +270095,7 @@
       "title": "Bayridge Zig Zag",
       "date": "2026-11-04",
       "year": "2026",
-      "status": "planned",
+      "status": "completed",
       "isSubwayWalk": false,
       "manualLayerId": "",
       "originalFolder": "To Walk",
