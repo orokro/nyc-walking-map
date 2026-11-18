@@ -43,24 +43,303 @@ export function resolveWalkColor(
 
 export function resolveWalkWidth(walk: WalkItem, settings: WalkSettings): number {
   if (walk.styleOverride?.width !== undefined) return walk.styleOverride.width;
-  if (walk.status === 'planned') return settings.plannedWalkWidth ?? 4.0;
+  if (walk.status === 'planned') return settings.plannedWalkWidth ?? 3.5;
   if (walk.isSubwayWalk) return settings.subwayWalkWidth ?? 3.2;
   return settings.completedWalkWidth ?? 3.2;
 }
 
+export interface ResolvedWalkStyle {
+  color: string;
+  width: number;
+  showBorder: boolean;
+  borderColor: string;
+  borderWidth: number;
+  showDashes: boolean;
+  showTicks: boolean;
+  showSelectionGlow: boolean;
+  gradientEnabled: boolean;
+  gradientStartColor: string;
+  gradientEndColor: string;
+  gradientRepeats: number;
+  hasCustomOverride: boolean;
+}
+
+export function resolveEffectiveWalkStyle(
+  walk: WalkItem,
+  settings: WalkSettings,
+  manualLayers: ManualLayer[]
+): ResolvedWalkStyle {
+  const ov = walk.styleOverride || {};
+  const isPlanned = walk.status === 'planned';
+  const baseColor = resolveWalkColor(walk, settings, manualLayers);
+  const width = resolveWalkWidth(walk, settings);
+
+  const showBorder =
+    ov.showBorder !== undefined
+      ? ov.showBorder
+      : isPlanned
+      ? settings.plannedShowBorder ?? true
+      : true;
+
+  const borderColor =
+    ov.borderColor || (isPlanned ? settings.plannedBorderColor || '#111827' : '#0f172a');
+
+  const borderWidth =
+    ov.borderWidth !== undefined
+      ? ov.borderWidth
+      : isPlanned
+      ? settings.plannedBorderWidth ?? 3.0
+      : 1.4;
+
+  const showDashes =
+    ov.showDashes !== undefined
+      ? ov.showDashes
+      : isPlanned
+      ? settings.plannedShowDashes ?? true
+      : false;
+
+  const showTicks =
+    ov.showTicks !== undefined
+      ? ov.showTicks
+      : isPlanned
+      ? settings.plannedShowTicks ?? true
+      : false;
+
+  const gradientEnabled =
+    ov.gradientEnabled !== undefined
+      ? ov.gradientEnabled
+      : isPlanned
+      ? settings.plannedGradientEnabled ?? false
+      : false;
+
+  const gradientStartColor =
+    ov.gradientStartColor ||
+    (isPlanned ? settings.plannedGradientStartColor || baseColor : baseColor);
+
+  const gradientEndColor =
+    ov.gradientEndColor ||
+    (isPlanned ? settings.plannedGradientEndColor || '#00E5FF' : '#00E5FF');
+
+  const gradientRepeats = Math.max(
+    1,
+    Math.round(
+      ov.gradientRepeats !== undefined
+        ? ov.gradientRepeats
+        : isPlanned
+        ? settings.plannedGradientRepeats ?? 1
+        : 1
+    )
+  );
+
+  const hasCustomOverride =
+    ov.width !== undefined ||
+    ov.color !== undefined ||
+    ov.showBorder !== undefined ||
+    ov.showDashes !== undefined ||
+    ov.showTicks !== undefined ||
+    ov.gradientEnabled !== undefined;
+
+  const showSelectionGlow =
+    ov.showSelectionGlow !== undefined
+      ? ov.showSelectionGlow
+      : !isPlanned && !gradientEnabled && showBorder;
+
+  return {
+    color: baseColor,
+    width,
+    showBorder,
+    borderColor,
+    borderWidth,
+    showDashes,
+    showTicks,
+    showSelectionGlow,
+    gradientEnabled,
+    gradientStartColor,
+    gradientEndColor,
+    gradientRepeats,
+    hasCustomOverride,
+  };
+}
+
 /**
- * Generates Google Maps Measure-Tool style graduated tick marks (every 0.25 mi)
- * and Mile Marker label points (every 1.0 mi + Start + End total badge)
+ * Evaluates a smooth 2-color gradient with repeating alternating stops (ping-pong)
+ * so there is never a hard color switch at repeat boundaries.
+ * - repeats = 1: Start (A) -> End (B)
+ * - repeats = 2: A -> B -> A
+ * - repeats = 3: A -> B -> A -> B
+ */
+export function evaluatePingPongGradient(
+  colorA: string,
+  colorB: string,
+  t: number,
+  repeats = 1
+): string {
+  const r = Math.max(1, Math.round(repeats));
+  const clamped = Math.max(0, Math.min(1, t));
+  if (clamped >= 1) {
+    return r % 2 === 1 ? colorB : colorA;
+  }
+  const scaled = clamped * r;
+  const seg = Math.floor(scaled);
+  const frac = scaled - seg;
+  const localT = seg % 2 === 0 ? frac : 1 - frac;
+  return interpolateHexColor(colorA, colorB, localT);
+}
+
+/**
+ * Builds a CSS linear-gradient string matching evaluatePingPongGradient stops.
+ */
+export function buildCssPingPongGradient(
+  colorA: string,
+  colorB: string,
+  repeats = 1
+): string {
+  const r = Math.max(1, Math.round(repeats));
+  const stops: string[] = [];
+  for (let i = 0; i <= r; i++) {
+    const pct = Number(((i / r) * 100).toFixed(2));
+    const col = i % 2 === 0 ? colorA : colorB;
+    stops.push(`${col} ${pct}%`);
+  }
+  return `linear-gradient(90deg, ${stops.join(', ')})`;
+}
+
+/**
+ * Subdivides a walk's coordinate array into smooth contiguous LineString features
+ * colored along a ping-pong gradient from start to end while preserving all original vertices.
+ */
+export function buildGradientLineFeatures(
+  coords: [number, number][],
+  colorA: string,
+  colorB: string,
+  repeats: number,
+  baseProps: Record<string, any>,
+  maxProgress = 1
+): GeoJSON.Feature[] {
+  if (!coords || coords.length < 2) return [];
+
+  const cosLat = Math.cos(((coords[0][1] || 40.73) * Math.PI) / 180);
+  const segLengths: number[] = [];
+  let totalLen = 0;
+
+  for (let i = 0; i < coords.length - 1; i++) {
+    const dx = (coords[i + 1][0] - coords[i][0]) * cosLat;
+    const dy = coords[i + 1][1] - coords[i][1];
+    const len = Math.hypot(dx, dy);
+    segLengths.push(len);
+    totalLen += len;
+  }
+
+  if (totalLen <= 1e-9) {
+    return [
+      {
+        type: 'Feature',
+        properties: { ...baseProps, color: colorA },
+        geometry: { type: 'LineString', coordinates: coords },
+      },
+    ];
+  }
+
+  const r = Math.max(1, Math.round(repeats));
+  const targetSteps = Math.min(240, Math.max(75, r * 48));
+  const stepLen = totalLen / targetSteps;
+
+  const features: GeoJSON.Feature[] = [];
+  let currentPoints: [number, number][] = [coords[0]];
+  let chunkStartDist = 0;
+  let accumDist = 0;
+
+  const flushChunk = (endDist: number, lastPt: [number, number]) => {
+    if (currentPoints.length < 2) return;
+    const midDist = (chunkStartDist + endDist) * 0.5;
+    const normT = (midDist / totalLen) * Math.max(0, Math.min(1, maxProgress));
+    const segColor = evaluatePingPongGradient(colorA, colorB, normT, r);
+    features.push({
+      type: 'Feature',
+      properties: {
+        ...baseProps,
+        color: segColor,
+      },
+      geometry: {
+        type: 'LineString',
+        coordinates: currentPoints,
+      },
+    });
+    currentPoints = [lastPt];
+    chunkStartDist = endDist;
+  };
+
+  for (let i = 0; i < coords.length - 1; i++) {
+    const p0 = coords[i];
+    const p1 = coords[i + 1];
+    const segLen = segLengths[i];
+    if (segLen <= 1e-10) continue;
+
+    // If this single vertex-to-vertex segment is longer than stepLen, subdivide it
+    const subCount = Math.max(1, Math.ceil(segLen / stepLen));
+    for (let s = 1; s <= subCount; s++) {
+      const frac = s / subCount;
+      const pt: [number, number] =
+        s === subCount
+          ? p1
+          : [
+              Number((p0[0] + (p1[0] - p0[0]) * frac).toFixed(6)),
+              Number((p0[1] + (p1[1] - p0[1]) * frac).toFixed(6)),
+            ];
+      currentPoints.push(pt);
+      const d = accumDist + segLen * frac;
+      if (d - chunkStartDist >= stepLen * 0.92) {
+        flushChunk(d, pt);
+      }
+    }
+    accumDist += segLen;
+  }
+
+  if (currentPoints.length >= 2) {
+    flushChunk(totalLen, coords[coords.length - 1]);
+  }
+
+  return features;
+}
+
+export interface PlannedWalkRenderInput {
+  id: string;
+  title: string;
+  coordinates: [number, number][];
+  color: string;
+  width: number;
+  showBorder: boolean;
+  borderColor: string;
+  borderWidth: number;
+  showDashes: boolean;
+  showTicks: boolean;
+  gradientEnabled: boolean;
+  gradientStartColor: string;
+  gradientEndColor: string;
+  gradientRepeats: number;
+  animProgress?: number;
+}
+
+/**
+ * Generates Google Maps Measure-Tool style graduated tick marks (every 0.25 mi),
+ * Mile Marker label points (every 1.0 mi + Start + End total badge),
+ * plus customizable border, dashes, thickness, and smooth gradient segments
  * for all visible Planned walks and/or the active draft route.
  */
 export function generatePlannedMeasureOverlays(
-  plannedWalks: { id: string; title: string; coordinates: [number, number][]; color?: string }[]
+  plannedWalks: PlannedWalkRenderInput[]
 ): {
+  hitGeoJSON: GeoJSON.FeatureCollection;
+  casingGeoJSON: GeoJSON.FeatureCollection;
   linesGeoJSON: GeoJSON.FeatureCollection;
+  dashesGeoJSON: GeoJSON.FeatureCollection;
   ticksGeoJSON: GeoJSON.FeatureCollection;
   markersGeoJSON: GeoJSON.FeatureCollection;
 } {
+  const hitFeatures: GeoJSON.Feature[] = [];
+  const casingFeatures: GeoJSON.Feature[] = [];
   const lineFeatures: GeoJSON.Feature[] = [];
+  const dashFeatures: GeoJSON.Feature[] = [];
   const tickFeatures: GeoJSON.Feature[] = [];
   const markerFeatures: GeoJSON.Feature[] = [];
 
@@ -68,13 +347,48 @@ export function generatePlannedMeasureOverlays(
     const coords = walk.coordinates;
     if (!coords || coords.length < 2) continue;
 
-    const line = turf.lineString(coords, {
+    const width = walk.width ?? 3.5;
+    const borderExtra = walk.borderWidth ?? 3.0;
+    const baseProps = {
       id: walk.id,
       title: walk.title,
       color: walk.color || '#FF6D00',
-    });
-    const totalMiles = turf.length(line, { units: 'miles' });
-    lineFeatures.push(line);
+      width,
+      borderColor: walk.borderColor || '#111827',
+      casingWidth: width + borderExtra,
+      dashWidth: Number(Math.max(1.2, width * 0.56).toFixed(2)),
+    };
+
+    const fullLine = turf.lineString(coords, baseProps);
+    hitFeatures.push(fullLine);
+
+    if (walk.showBorder !== false) {
+      casingFeatures.push(fullLine);
+    }
+
+    if (walk.gradientEnabled) {
+      const gradSegments = buildGradientLineFeatures(
+        coords,
+        walk.gradientStartColor || walk.color || '#FF6D00',
+        walk.gradientEndColor || '#00E5FF',
+        walk.gradientRepeats || 1,
+        baseProps,
+        walk.animProgress ?? 1
+      );
+      lineFeatures.push(...gradSegments);
+    } else {
+      lineFeatures.push(fullLine);
+    }
+
+    if (walk.showDashes !== false) {
+      dashFeatures.push(fullLine);
+    }
+
+    if (walk.showTicks === false) {
+      continue;
+    }
+
+    const totalMiles = turf.length(fullLine, { units: 'miles' });
 
     // Start marker (0 mi)
     markerFeatures.push({
@@ -96,9 +410,9 @@ export function generatePlannedMeasureOverlays(
     const epsilon = 0.01;
     for (let dist = stepMiles; dist < totalMiles - 0.04; dist += stepMiles) {
       const isMajorMile = Math.abs(dist - Math.round(dist)) < 0.001;
-      const pt = turf.along(line, dist, { units: 'miles' });
-      const ptBefore = turf.along(line, Math.max(0, dist - epsilon), { units: 'miles' });
-      const ptAfter = turf.along(line, Math.min(totalMiles, dist + epsilon), { units: 'miles' });
+      const pt = turf.along(fullLine, dist, { units: 'miles' });
+      const ptBefore = turf.along(fullLine, Math.max(0, dist - epsilon), { units: 'miles' });
+      const ptAfter = turf.along(fullLine, Math.min(totalMiles, dist + epsilon), { units: 'miles' });
       const bearing = turf.bearing(ptBefore, ptAfter);
 
       // Perpendicular tick line
@@ -153,7 +467,10 @@ export function generatePlannedMeasureOverlays(
   }
 
   return {
+    hitGeoJSON: { type: 'FeatureCollection', features: hitFeatures },
+    casingGeoJSON: { type: 'FeatureCollection', features: casingFeatures },
     linesGeoJSON: { type: 'FeatureCollection', features: lineFeatures },
+    dashesGeoJSON: { type: 'FeatureCollection', features: dashFeatures },
     ticksGeoJSON: { type: 'FeatureCollection', features: tickFeatures },
     markersGeoJSON: { type: 'FeatureCollection', features: markerFeatures },
   };

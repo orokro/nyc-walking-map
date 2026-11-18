@@ -10,7 +10,11 @@ import {
   getAutoYearGroup,
   resolveWalkColor,
   resolveWalkWidth,
+  resolveEffectiveWalkStyle,
+  buildGradientLineFeatures,
+  evaluatePingPongGradient,
   generatePlannedMeasureOverlays,
+  PlannedWalkRenderInput,
   sliceCoordinatesByProgress,
   findNearestVertexSnap,
   interpolateHexColor,
@@ -205,12 +209,15 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
       'borough-lines-src',
       'transit-rail-src',
       'transit-subway-src',
-      'completed-walks-src',
-      'anim-head-src',
       'selected-walk-src',
+      'completed-walks-src',
+      'planned-hit-src',
+      'planned-casing-src',
       'planned-lines-src',
+      'planned-dashes-src',
       'planned-ticks-src',
       'planned-markers-src',
+      'anim-head-src',
       'editor-line-src',
       'editor-midpoints-src',
       'editor-vertices-src',
@@ -284,7 +291,22 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         });
       }
 
-      // 4. Completed Walks (Wide invisible hit area + casing + crisp line)
+      // 4. Selected Walk Halo (Drawn behind walk casing/core so it never obscures thickness, border toggle, or gradient)
+      if (!map.getLayer('selected-walk-glow')) {
+        map.addLayer({
+          id: 'selected-walk-glow',
+          type: 'line',
+          source: 'selected-walk-src',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': '#facc15',
+            'line-width': ['coalesce', ['get', 'glowWidth'], 9],
+            'line-opacity': 0.85,
+          },
+        });
+      }
+
+      // 5. Completed Walks (Wide invisible hit area + casing + crisp line)
       if (!map.getLayer('completed-walks-hit-layer')) {
         map.addLayer({
           id: 'completed-walks-hit-layer',
@@ -305,9 +327,19 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
           source: 'completed-walks-src',
           layout: { 'line-join': 'round', 'line-cap': 'round' },
           paint: {
-            'line-color': '#0f172a',
-            'line-width': ['+', ['coalesce', ['get', 'width'], 3.2], 1.2],
-            'line-opacity': ['*', ['coalesce', ['get', 'opacity'], 0.9], 0.32],
+            'line-color': ['coalesce', ['get', 'borderColor'], '#0f172a'],
+            'line-width': [
+              'case',
+              ['==', ['get', 'showBorder'], 0],
+              0,
+              ['+', ['coalesce', ['get', 'width'], 3.2], ['coalesce', ['get', 'borderWidth'], 1.2]],
+            ],
+            'line-opacity': [
+              'case',
+              ['==', ['get', 'showBorder'], 0],
+              0,
+              ['*', ['coalesce', ['get', 'opacity'], 0.9], 0.45],
+            ],
           },
         });
       }
@@ -325,71 +357,29 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         });
       }
 
-      // Animation Hot Leading Tip Marker
-      if (!map.getLayer('anim-head-glow')) {
+      // 6. Planned Walks (Graduated Style with customizable border, thickness, dashes, and gradient)
+      if (!map.getLayer('planned-walks-hit-layer')) {
         map.addLayer({
-          id: 'anim-head-glow',
-          type: 'circle',
-          source: 'anim-head-src',
-          paint: {
-            'circle-radius': 10,
-            'circle-color': ['coalesce', ['get', 'color'], '#FF1744'],
-            'circle-opacity': 0.35,
-          },
-        });
-      }
-      if (!map.getLayer('anim-head-dot')) {
-        map.addLayer({
-          id: 'anim-head-dot',
-          type: 'circle',
-          source: 'anim-head-src',
-          paint: {
-            'circle-radius': 5,
-            'circle-color': '#ffffff',
-            'circle-stroke-color': ['coalesce', ['get', 'color'], '#FF1744'],
-            'circle-stroke-width': 3,
-          },
-        });
-      }
-
-      // 5. Selected Walk Highlight
-      if (!map.getLayer('selected-walk-glow')) {
-        map.addLayer({
-          id: 'selected-walk-glow',
+          id: 'planned-walks-hit-layer',
           type: 'line',
-          source: 'selected-walk-src',
+          source: 'planned-hit-src',
           layout: { 'line-join': 'round', 'line-cap': 'round' },
           paint: {
-            'line-color': '#facc15',
-            'line-width': 9,
-            'line-opacity': 0.85,
+            'line-color': '#000000',
+            'line-width': 14,
+            'line-opacity': 0.01,
           },
         });
       }
-      if (!map.getLayer('selected-walk-core')) {
-        map.addLayer({
-          id: 'selected-walk-core',
-          type: 'line',
-          source: 'selected-walk-src',
-          layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: {
-            'line-color': ['coalesce', ['get', 'color'], '#0288D1'],
-            'line-width': 4,
-            'line-opacity': 1,
-          },
-        });
-      }
-
-      // 6. Planned Walks (Google Maps Measure-Tool Graduated Style)
       if (!map.getLayer('planned-walks-casing-layer')) {
         map.addLayer({
           id: 'planned-walks-casing-layer',
           type: 'line',
-          source: 'planned-lines-src',
+          source: 'planned-casing-src',
           layout: { 'line-join': 'round', 'line-cap': 'round' },
           paint: {
-            'line-color': '#111827',
-            'line-width': 6.5,
+            'line-color': ['coalesce', ['get', 'borderColor'], '#111827'],
+            'line-width': ['coalesce', ['get', 'casingWidth'], 6.5],
             'line-opacity': 0.92,
           },
         });
@@ -402,7 +392,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
           layout: { 'line-join': 'round', 'line-cap': 'round' },
           paint: {
             'line-color': ['coalesce', ['get', 'color'], '#FF6D00'],
-            'line-width': 3.5,
+            'line-width': ['coalesce', ['get', 'width'], 3.5],
             'line-opacity': 1,
           },
         });
@@ -411,11 +401,11 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         map.addLayer({
           id: 'planned-walks-dash-layer',
           type: 'line',
-          source: 'planned-lines-src',
+          source: 'planned-dashes-src',
           layout: { 'line-join': 'round', 'line-cap': 'butt' },
           paint: {
             'line-color': '#ffffff',
-            'line-width': 2.0,
+            'line-width': ['coalesce', ['get', 'dashWidth'], 2.0],
             'line-dasharray': [2, 3],
             'line-opacity': 0.9,
           },
@@ -503,6 +493,33 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
             ],
             'text-halo-color': '#0f172a',
             'text-halo-width': 2.2,
+          },
+        });
+      }
+
+      // Animation Hot Leading Tip Marker (Placed above both Completed and Planned walks!)
+      if (!map.getLayer('anim-head-glow')) {
+        map.addLayer({
+          id: 'anim-head-glow',
+          type: 'circle',
+          source: 'anim-head-src',
+          paint: {
+            'circle-radius': 10,
+            'circle-color': ['coalesce', ['get', 'color'], '#FF1744'],
+            'circle-opacity': 0.35,
+          },
+        });
+      }
+      if (!map.getLayer('anim-head-dot')) {
+        map.addLayer({
+          id: 'anim-head-dot',
+          type: 'circle',
+          source: 'anim-head-src',
+          paint: {
+            'circle-radius': 5,
+            'circle-color': '#ffffff',
+            'circle-stroke-color': ['coalesce', ['get', 'color'], '#FF1744'],
+            'circle-stroke-width': 3,
           },
         });
       }
@@ -662,12 +679,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
       const q = sq.trim().toLowerCase();
       const completedFeatures: GeoJSON.Feature[] = [];
       const animHeadFeatures: GeoJSON.Feature[] = [];
-      const plannedForMeasure: {
-        id: string;
-        title: string;
-        coordinates: [number, number][];
-        color?: string;
-      }[] = [];
+      const plannedForMeasure: PlannedWalkRenderInput[] = [];
 
       const visibleManualSet = new Set(
         ds.manualLayers.filter((l) => l.visible).map((l) => l.id)
@@ -694,13 +706,87 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
           return;
         }
 
+        const eff = resolveEffectiveWalkStyle(walk, ds.settings, ds.manualLayers);
+
         if (walk.status === 'planned') {
+          // If animating a single walk, only render the selected walk and slice it by progress
+          if (anim.active && anim.mode === 'single') {
+            if (walk.id !== selId) return;
+            const sliced = sliceCoordinatesByProgress(
+              walk.coordinates,
+              anim.currentWalkProgress
+            );
+            if (!sliced || sliced.length < 2) return;
+
+            const cooldown = anim.cooldownProgress || 0;
+            let activeColor = eff.color;
+            let activeWidth = eff.width;
+
+            if (!eff.gradientEnabled && anim.hotFadeEnabled) {
+              const coolT = anim.currentWalkProgress < 1 ? 0 : Math.min(1, cooldown);
+              activeColor = interpolateHexColor(
+                anim.hotColor || '#FF1744',
+                eff.color,
+                coolT
+              );
+              activeWidth = eff.width + (1 - coolT) * 1.5;
+            }
+
+            if (anim.currentWalkProgress < 1) {
+              const headColor = eff.gradientEnabled
+                ? evaluatePingPongGradient(
+                    eff.gradientStartColor,
+                    eff.gradientEndColor,
+                    anim.currentWalkProgress,
+                    eff.gradientRepeats
+                  )
+                : anim.hotFadeEnabled
+                ? anim.hotColor || '#FF1744'
+                : eff.color;
+              animHeadFeatures.push({
+                type: 'Feature',
+                properties: { color: headColor },
+                geometry: { type: 'Point', coordinates: sliced[sliced.length - 1] },
+              });
+            }
+
+            plannedForMeasure.push({
+              id: walk.id,
+              title: walk.title,
+              coordinates: sliced,
+              color: activeColor,
+              width: activeWidth,
+              showBorder: eff.showBorder,
+              borderColor: eff.borderColor,
+              borderWidth: eff.borderWidth,
+              showDashes: eff.showDashes,
+              showTicks: eff.showTicks,
+              gradientEnabled: eff.gradientEnabled,
+              gradientStartColor: eff.gradientStartColor,
+              gradientEndColor: eff.gradientEndColor,
+              gradientRepeats: eff.gradientRepeats,
+              animProgress: anim.currentWalkProgress,
+            });
+            return;
+          }
+
           if (!showPlan) return;
           plannedForMeasure.push({
             id: walk.id,
             title: walk.title,
             coordinates: walk.coordinates,
-            color: walk.styleOverride?.color || ds.settings.plannedWalkColor || '#FF6D00',
+            color: eff.color,
+            width: eff.width,
+            showBorder: eff.showBorder,
+            borderColor: eff.borderColor,
+            borderWidth: eff.borderWidth,
+            showDashes: eff.showDashes,
+            showTicks: eff.showTicks,
+            gradientEnabled: eff.gradientEnabled,
+            gradientStartColor: eff.gradientStartColor,
+            gradientEndColor: eff.gradientEndColor,
+            gradientRepeats: eff.gradientRepeats,
+            animProgress: 1,
           });
           return;
         }
@@ -713,11 +799,12 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         }
 
         let coords = walk.coordinates;
-        let color = resolveWalkColor(walk, ds.settings, ds.manualLayers);
-        let width = resolveWalkWidth(walk, ds.settings);
+        let color = eff.color;
+        let width = eff.width;
         const opacity = walk.isSubwayWalk
           ? ds.settings.subwayWalkOpacity ?? 0.9
           : ds.settings.completedWalkOpacity ?? 0.9;
+        let animProgressForGrad = 1;
 
         // Handle Animation & Hot-to-Cool Color Fade
         if (anim.active) {
@@ -725,15 +812,27 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
           if (anim.mode === 'single') {
             if (walk.id !== selId) return;
             coords = sliceCoordinatesByProgress(walk.coordinates, anim.currentWalkProgress);
-            if (anim.hotFadeEnabled && coords.length >= 2) {
-              // While drawing (progress < 1), keep hot; during end cooldown (0..1), fade smoothly to cool final color
-              const coolT = anim.currentWalkProgress < 1 ? 0 : Math.min(1, cooldown);
-              color = interpolateHexColor(anim.hotColor || '#FF1744', color, coolT);
-              width = width + (1 - coolT) * 1.8;
+            animProgressForGrad = anim.currentWalkProgress;
+            if (coords.length >= 2) {
+              if (!eff.gradientEnabled && anim.hotFadeEnabled) {
+                const coolT = anim.currentWalkProgress < 1 ? 0 : Math.min(1, cooldown);
+                color = interpolateHexColor(anim.hotColor || '#FF1744', color, coolT);
+                width = width + (1 - coolT) * 1.8;
+              }
               if (anim.currentWalkProgress < 1) {
+                const headColor = eff.gradientEnabled
+                  ? evaluatePingPongGradient(
+                      eff.gradientStartColor,
+                      eff.gradientEndColor,
+                      anim.currentWalkProgress,
+                      eff.gradientRepeats
+                    )
+                  : anim.hotFadeEnabled
+                  ? anim.hotColor || '#FF1744'
+                  : color;
                 animHeadFeatures.push({
                   type: 'Feature',
-                  properties: { color: anim.hotColor || '#FF1744' },
+                  properties: { color: headColor },
                   geometry: { type: 'Point', coordinates: coords[coords.length - 1] },
                 });
               }
@@ -743,6 +842,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
             if (cIdx === -1 || cIdx > anim.currentWalkIndex) return;
             if (cIdx === anim.currentWalkIndex) {
               coords = sliceCoordinatesByProgress(walk.coordinates, anim.currentWalkProgress);
+              animProgressForGrad = anim.currentWalkProgress;
               if (coords.length >= 2 && cooldown === 0 && anim.currentWalkProgress < 1) {
                 animHeadFeatures.push({
                   type: 'Feature',
@@ -759,12 +859,9 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
               const ageWalks = Math.max(0, exactTimelinePos - (cIdx + 1));
 
               if (cIdx === anim.currentWalkIndex && cooldown === 0 && anim.currentWalkProgress < 1) {
-                // Currently drawing walk: 100% Hot Color + thickness boost so it stands out on top
                 color = anim.hotColor || '#FF1744';
                 width = width + 2.0;
               } else if (ageWalks < fadeWindow) {
-                // Recently completed walk (including final walks during end cooldown):
-                // smoothly cool from Hot Color -> Final Cool Color
                 const coolT = ageWalks / fadeWindow;
                 color = interpolateHexColor(anim.hotColor || '#FF1744', color, coolT);
                 width = width + (1 - coolT) * 1.6;
@@ -775,30 +872,61 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
 
         if (!coords || coords.length < 2) return;
 
-        completedFeatures.push({
-          type: 'Feature',
-          properties: {
-            id: walk.id,
-            title: walk.title,
-            date: walk.date,
-            isSubway: walk.isSubwayWalk ? 1 : 0,
-            color,
-            width,
-            opacity,
-          },
-          geometry: {
-            type: 'LineString',
-            coordinates: coords,
-          },
-        });
+        const baseCompletedProps = {
+          id: walk.id,
+          title: walk.title,
+          date: walk.date,
+          isSubway: walk.isSubwayWalk ? 1 : 0,
+          color,
+          width,
+          opacity,
+          showBorder: eff.showBorder ? 1 : 0,
+          borderColor: eff.borderColor,
+          borderWidth: eff.borderWidth,
+          hasCustomColor: walk.styleOverride?.color || eff.gradientEnabled ? 1 : 0,
+          hasCustomWidth: walk.styleOverride?.width !== undefined ? 1 : 0,
+        };
+
+        if (eff.gradientEnabled && !(anim.active && anim.mode === 'chronological' && anim.hotFadeEnabled)) {
+          const gradSegments = buildGradientLineFeatures(
+            coords,
+            eff.gradientStartColor,
+            eff.gradientEndColor,
+            eff.gradientRepeats,
+            baseCompletedProps,
+            animProgressForGrad
+          );
+          completedFeatures.push(...gradSegments);
+        } else {
+          completedFeatures.push({
+            type: 'Feature',
+            properties: baseCompletedProps,
+            geometry: {
+              type: 'LineString',
+              coordinates: coords,
+            },
+          });
+        }
       });
 
       if ((mode === 'draw' || mode === 'edit') && dCoords.length >= 2 && dStatus === 'planned') {
+        const s = ds.settings;
         plannedForMeasure.push({
           id: 'draft-planned',
           title: dTitle || 'Planned Route',
           coordinates: dCoords,
-          color: ds.settings.plannedWalkColor || '#FF6D00',
+          color: s.plannedWalkColor || '#FF6D00',
+          width: s.plannedWalkWidth ?? 3.5,
+          showBorder: s.plannedShowBorder ?? true,
+          borderColor: s.plannedBorderColor || '#111827',
+          borderWidth: s.plannedBorderWidth ?? 3.0,
+          showDashes: s.plannedShowDashes ?? true,
+          showTicks: s.plannedShowTicks ?? true,
+          gradientEnabled: s.plannedGradientEnabled ?? false,
+          gradientStartColor: s.plannedGradientStartColor || s.plannedWalkColor || '#FF6D00',
+          gradientEndColor: s.plannedGradientEndColor || '#00E5FF',
+          gradientRepeats: s.plannedGradientRepeats ?? 1,
+          animProgress: 1,
         });
       }
 
@@ -812,7 +940,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         features: animHeadFeatures,
       });
 
-      // Selected Walk Highlight
+      // Selected Walk Highlight Halo (only shown when showSelectionGlow is true)
       const selectedSrc = map.getSource('selected-walk-src') as
         | maplibregl.GeoJSONSource
         | undefined;
@@ -822,33 +950,53 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
             ? ds.walks.find((w) => w.id === selId)
             : null;
         if (selWalk && selWalk.coordinates.length >= 2) {
-          selectedSrc.setData({
-            type: 'FeatureCollection',
-            features: [
-              {
-                type: 'Feature',
-                properties: {
-                  id: selWalk.id,
-                  color: resolveWalkColor(selWalk, ds.settings, ds.manualLayers),
+          const selEff = resolveEffectiveWalkStyle(selWalk, ds.settings, ds.manualLayers);
+          if (selEff.showSelectionGlow) {
+            selectedSrc.setData({
+              type: 'FeatureCollection',
+              features: [
+                {
+                  type: 'Feature',
+                  properties: {
+                    id: selWalk.id,
+                    glowWidth: selEff.width + (selEff.showBorder ? selEff.borderWidth : 0) + 4,
+                  },
+                  geometry: {
+                    type: 'LineString',
+                    coordinates: selWalk.coordinates,
+                  },
                 },
-                geometry: {
-                  type: 'LineString',
-                  coordinates: selWalk.coordinates,
-                },
-              },
-            ],
-          });
+              ],
+            });
+          } else {
+            selectedSrc.setData({ type: 'FeatureCollection', features: [] });
+          }
         } else {
           selectedSrc.setData({ type: 'FeatureCollection', features: [] });
         }
       }
 
       // Planned Measure Overlays
-      const { linesGeoJSON, ticksGeoJSON, markersGeoJSON } =
-        generatePlannedMeasureOverlays(plannedForMeasure);
+      const {
+        hitGeoJSON,
+        casingGeoJSON,
+        linesGeoJSON,
+        dashesGeoJSON,
+        ticksGeoJSON,
+        markersGeoJSON,
+      } = generatePlannedMeasureOverlays(plannedForMeasure);
 
+      (map.getSource('planned-hit-src') as maplibregl.GeoJSONSource | undefined)?.setData(
+        hitGeoJSON
+      );
+      (map.getSource('planned-casing-src') as maplibregl.GeoJSONSource | undefined)?.setData(
+        casingGeoJSON
+      );
       (map.getSource('planned-lines-src') as maplibregl.GeoJSONSource | undefined)?.setData(
         linesGeoJSON
+      );
+      (map.getSource('planned-dashes-src') as maplibregl.GeoJSONSource | undefined)?.setData(
+        dashesGeoJSON
       );
       (map.getSource('planned-ticks-src') as maplibregl.GeoJSONSource | undefined)?.setData(
         ticksGeoJSON
@@ -939,11 +1087,16 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
           );
         }
         if (map.getLayer('planned-walks-inner-layer')) {
-          map.setPaintProperty(
-            'planned-walks-inner-layer',
-            'line-color',
-            s.plannedWalkColor || '#FF6D00'
-          );
+          map.setPaintProperty('planned-walks-inner-layer', 'line-color', [
+            'coalesce',
+            ['get', 'color'],
+            s.plannedWalkColor || '#FF6D00',
+          ]);
+          map.setPaintProperty('planned-walks-inner-layer', 'line-width', [
+            'coalesce',
+            ['get', 'width'],
+            Number(s.plannedWalkWidth ?? 3.5),
+          ]);
         }
 
         if (map.getLayer('completed-walks-layer') && map.getLayer('completed-walks-casing-layer')) {
@@ -952,13 +1105,16 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
             map.setPaintProperty('completed-walks-layer', 'line-width', ['get', 'width']);
             map.setPaintProperty('completed-walks-layer', 'line-opacity', ['get', 'opacity']);
             map.setPaintProperty('completed-walks-casing-layer', 'line-width', [
-              '+',
-              ['coalesce', ['get', 'width'], 3.2],
-              1.2,
+              'case',
+              ['==', ['get', 'showBorder'], 0],
+              0,
+              ['+', ['coalesce', ['get', 'width'], 3.2], ['coalesce', ['get', 'borderWidth'], 1.2]],
             ]);
           } else {
             const wExpr: any = [
               'case',
+              ['==', ['get', 'hasCustomWidth'], 1],
+              ['get', 'width'],
               ['==', ['get', 'isSubway'], 1],
               Number(s.subwayWalkWidth ?? 3.2),
               Number(s.completedWalkWidth ?? 3.2),
@@ -973,6 +1129,8 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
               s.colorMode === 'uniform'
                 ? [
                     'case',
+                    ['==', ['get', 'hasCustomColor'], 1],
+                    ['get', 'color'],
                     ['==', ['get', 'isSubway'], 1],
                     s.subwayWalkColor || '#0097A7',
                     s.completedWalkColor || '#0288D1',
@@ -983,11 +1141,17 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
             map.setPaintProperty('completed-walks-layer', 'line-opacity', opExpr);
             map.setPaintProperty('completed-walks-layer', 'line-color', colExpr);
 
-            map.setPaintProperty('completed-walks-casing-layer', 'line-width', ['+', wExpr, 1.2]);
+            map.setPaintProperty('completed-walks-casing-layer', 'line-width', [
+              'case',
+              ['==', ['get', 'showBorder'], 0],
+              0,
+              ['+', wExpr, ['coalesce', ['get', 'borderWidth'], 1.2]],
+            ]);
             map.setPaintProperty('completed-walks-casing-layer', 'line-opacity', [
-              '*',
-              opExpr,
-              0.32,
+              'case',
+              ['==', ['get', 'showBorder'], 0],
+              0,
+              ['*', opExpr, 0.45],
             ]);
           }
         }
@@ -1188,7 +1352,11 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         setHoverVertexIdx(null);
         if (map.getLayer('completed-walks-hit-layer')) {
           const walkHits = map.queryRenderedFeatures(e.point, {
-            layers: ['completed-walks-hit-layer', 'planned-walks-casing-layer'],
+            layers: [
+              'completed-walks-hit-layer',
+              'planned-walks-hit-layer',
+              'planned-walks-casing-layer',
+            ],
           });
           canvas.style.cursor = walkHits.length > 0 ? 'pointer' : 'grab';
         }
@@ -1250,7 +1418,11 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
         updateDraft([...coords, newPt], true);
       } else if (mode === 'view') {
         const walkHits = map.queryRenderedFeatures(e.point, {
-          layers: ['planned-walks-casing-layer', 'completed-walks-hit-layer'],
+          layers: [
+            'planned-walks-hit-layer',
+            'planned-walks-casing-layer',
+            'completed-walks-hit-layer',
+          ],
         });
         if (walkHits.length > 0) {
           const wId = walkHits[0].properties?.id;
@@ -1324,6 +1496,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
     dataset.settings.subwayWalkWidth,
     dataset.settings.subwayWalkOpacity,
     dataset.settings.plannedWalkColor,
+    dataset.settings.plannedWalkWidth,
     dataset.settings.boroughLineColor,
     dataset.settings.boroughLineWidth,
     dataset.settings.colorMode,
@@ -1357,6 +1530,16 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
     dataset.settings.completedWalkColor,
     dataset.settings.subwayWalkColor,
     dataset.settings.plannedWalkColor,
+    dataset.settings.plannedWalkWidth,
+    dataset.settings.plannedShowBorder,
+    dataset.settings.plannedBorderColor,
+    dataset.settings.plannedBorderWidth,
+    dataset.settings.plannedShowDashes,
+    dataset.settings.plannedShowTicks,
+    dataset.settings.plannedGradientEnabled,
+    dataset.settings.plannedGradientStartColor,
+    dataset.settings.plannedGradientEndColor,
+    dataset.settings.plannedGradientRepeats,
     visibleYears,
     showSubwayWalks,
     showPlannedWalks,

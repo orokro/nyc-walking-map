@@ -1,3 +1,18 @@
+export interface WalkStyleOverride {
+  color?: string;
+  width?: number;
+  showBorder?: boolean;
+  borderColor?: string;
+  borderWidth?: number;
+  showDashes?: boolean;
+  showTicks?: boolean;
+  showSelectionGlow?: boolean;
+  gradientEnabled?: boolean;
+  gradientStartColor?: string;
+  gradientEndColor?: string;
+  gradientRepeats?: number;
+}
+
 export interface WalkItem {
   id: string;
   title: string;
@@ -8,10 +23,7 @@ export interface WalkItem {
   manualLayerId: string;
   originalFolder?: string;
   originalColor?: string;
-  styleOverride?: {
-    color?: string;
-    width?: number;
-  };
+  styleOverride?: WalkStyleOverride;
   distanceMiles: number;
   notes: string;
   coordinates: [number, number][];
@@ -26,6 +38,15 @@ export interface WalkSettings {
   subwayWalkOpacity: number;
   plannedWalkColor: string;
   plannedWalkWidth: number;
+  plannedShowBorder?: boolean;
+  plannedBorderColor?: string;
+  plannedBorderWidth?: number;
+  plannedShowDashes?: boolean;
+  plannedShowTicks?: boolean;
+  plannedGradientEnabled?: boolean;
+  plannedGradientStartColor?: string;
+  plannedGradientEndColor?: string;
+  plannedGradientRepeats?: number;
   boroughLineColor: string;
   boroughLineWidth: number;
   showBoroughLines: boolean;

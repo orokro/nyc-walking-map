@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updatedAt": "2026-11-11T10:34:44.202Z",
+  "updatedAt": "2026-11-18T08:18:36.450Z",
   "settings": {
     "completedWalkColor": "#0288D1",
     "completedWalkWidth": 2,
@@ -272659,7 +272659,15 @@
           -73.889383,
           40.712191
         ]
-      ]
+      ],
+      "styleOverride": {
+        "borderWidth": 0.5,
+        "gradientEnabled": true,
+        "gradientStartColor": "#FF6D00",
+        "gradientEndColor": "#00E5FF",
+        "gradientRepeats": 6,
+        "showDashes": false
+      }
     },
     {
       "id": "walk-0267",

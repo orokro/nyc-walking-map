@@ -36,11 +36,18 @@ import {
 import {
   WalkDataset,
   WalkItem,
+  WalkStyleOverride,
   TileProviderId,
   TILE_PROVIDER_OPTIONS,
   YEAR_PALETTE,
 } from './types/walks';
-import { computeLineMiles, getAutoYearGroup, resolveWalkColor } from './utils/geo';
+import {
+  computeLineMiles,
+  getAutoYearGroup,
+  resolveWalkColor,
+  resolveEffectiveWalkStyle,
+  buildCssPingPongGradient,
+} from './utils/geo';
 import { MapCanvas, AnimationState, ViewportFrameConfig } from './components/MapCanvas';
 import { exportMapScreenshot } from './utils/screenshotExport';
 import { exportDatasetToKmzBlob, parseKmzFileToWalks } from './utils/clientKmz';
@@ -469,6 +476,30 @@ export const App: React.FC = () => {
       duration: 650,
     });
   };
+
+  // Update per-walk render style overrides (thickness, border, dashes, gradient)
+  const [showInspectorStylePanel, setShowInspectorStylePanel] = useState<boolean>(true);
+  const updateWalkStyleOverride = useCallback(
+    (walkId: string, patch: Partial<WalkStyleOverride> | null) => {
+      if (!dataset) return;
+      const nextWalks = dataset.walks.map((w) => {
+        if (w.id !== walkId) return w;
+        if (patch === null) {
+          const { styleOverride, ...rest } = w;
+          return rest as WalkItem;
+        }
+        return {
+          ...w,
+          styleOverride: {
+            ...(w.styleOverride || {}),
+            ...patch,
+          },
+        };
+      });
+      persistDataset({ ...dataset, walks: nextWalks });
+    },
+    [dataset, persistDataset]
+  );
 
   // Animation Loop
   const completedWalksChronological = useMemo(() => {
@@ -1616,26 +1647,230 @@ export const App: React.FC = () => {
                   </div>
 
                   <div className="layer-section">
-                    <div className="section-title">PLANNED WALKS (GRADUATED MEASURE MODE)</div>
+                    <div className="section-title">PLANNED WALKS (DEFAULT RENDER &amp; GRADIENT)</div>
+                    <div className="segmented-toggle" style={{ marginBottom: 8 }}>
+                      <button
+                        type="button"
+                        className={!dataset.settings.plannedGradientEnabled ? 'active planned' : ''}
+                        onClick={() =>
+                          persistDataset({
+                            ...dataset,
+                            settings: { ...dataset.settings, plannedGradientEnabled: false },
+                          })
+                        }
+                      >
+                        Solid Color
+                      </button>
+                      <button
+                        type="button"
+                        className={dataset.settings.plannedGradientEnabled ? 'active planned' : ''}
+                        onClick={() =>
+                          persistDataset({
+                            ...dataset,
+                            settings: { ...dataset.settings, plannedGradientEnabled: true },
+                          })
+                        }
+                      >
+                        Gradient (2-Color)
+                      </button>
+                    </div>
+
+                    {!dataset.settings.plannedGradientEnabled ? (
+                      <div className="style-control-row">
+                        <label>Core Line Color</label>
+                        <input
+                          type="color"
+                          value={dataset.settings.plannedWalkColor || '#FF6D00'}
+                          onChange={(e) =>
+                            persistDataset({
+                              ...dataset,
+                              settings: {
+                                ...dataset.settings,
+                                plannedWalkColor: e.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                    ) : (
+                      <div className="gradient-config-box">
+                        <div
+                          className="gradient-preview-bar"
+                          style={{
+                            background: buildCssPingPongGradient(
+                              dataset.settings.plannedGradientStartColor ||
+                                dataset.settings.plannedWalkColor ||
+                                '#FF6D00',
+                              dataset.settings.plannedGradientEndColor || '#00E5FF',
+                              dataset.settings.plannedGradientRepeats ?? 1
+                            ),
+                          }}
+                        >
+                          <span>START</span>
+                          <span>
+                            {(dataset.settings.plannedGradientRepeats ?? 1) === 1
+                              ? '1x (Start → End)'
+                              : `${dataset.settings.plannedGradientRepeats}x Smooth Repeat`}
+                          </span>
+                          <span>END</span>
+                        </div>
+                        <div className="gradient-color-row">
+                          <label className="grad-color-pick">
+                            <span>Color 1</span>
+                            <input
+                              type="color"
+                              value={
+                                dataset.settings.plannedGradientStartColor ||
+                                dataset.settings.plannedWalkColor ||
+                                '#FF6D00'
+                              }
+                              onChange={(e) =>
+                                persistDataset({
+                                  ...dataset,
+                                  settings: {
+                                    ...dataset.settings,
+                                    plannedGradientStartColor: e.target.value,
+                                  },
+                                })
+                              }
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="mini-btn"
+                            title="Swap Start & End Colors"
+                            onClick={() =>
+                              persistDataset({
+                                ...dataset,
+                                settings: {
+                                  ...dataset.settings,
+                                  plannedGradientStartColor:
+                                    dataset.settings.plannedGradientEndColor || '#00E5FF',
+                                  plannedGradientEndColor:
+                                    dataset.settings.plannedGradientStartColor ||
+                                    dataset.settings.plannedWalkColor ||
+                                    '#FF6D00',
+                                },
+                              })
+                            }
+                          >
+                            <ArrowLeftRight size={12} /> Swap
+                          </button>
+                          <label className="grad-color-pick">
+                            <span>Color 2</span>
+                            <input
+                              type="color"
+                              value={dataset.settings.plannedGradientEndColor || '#00E5FF'}
+                              onChange={(e) =>
+                                persistDataset({
+                                  ...dataset,
+                                  settings: {
+                                    ...dataset.settings,
+                                    plannedGradientEndColor: e.target.value,
+                                  },
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+                        <div className="style-control-row">
+                          <label>
+                            Repeats ({dataset.settings.plannedGradientRepeats ?? 1}x alternating
+                            stops)
+                          </label>
+                          <input
+                            type="range"
+                            min={1}
+                            max={8}
+                            step={1}
+                            value={dataset.settings.plannedGradientRepeats ?? 1}
+                            onChange={(e) =>
+                              persistDataset({
+                                ...dataset,
+                                settings: {
+                                  ...dataset.settings,
+                                  plannedGradientRepeats: Number(e.target.value),
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                    )}
+
                     <div className="style-control-row">
-                      <label>Core Line Color</label>
+                      <label>Line Width ({dataset.settings.plannedWalkWidth ?? 3.5} px)</label>
                       <input
-                        type="color"
-                        value={dataset.settings.plannedWalkColor}
+                        type="range"
+                        min={1.5}
+                        max={9}
+                        step={0.5}
+                        value={dataset.settings.plannedWalkWidth ?? 3.5}
                         onChange={(e) =>
                           persistDataset({
                             ...dataset,
                             settings: {
                               ...dataset.settings,
-                              plannedWalkColor: e.target.value,
+                              plannedWalkWidth: Number(e.target.value),
                             },
                           })
                         }
                       />
                     </div>
-                    <p className="helper-note">
-                      Planned walks automatically render with high-contrast outer casing, 0.25-mile
-                      graduation ticks, and 1-mile distance badges for mobile screenshots.
+
+                    <div className="render-toggles-grid">
+                      <label className="render-check-pill">
+                        <input
+                          type="checkbox"
+                          checked={dataset.settings.plannedShowBorder ?? true}
+                          onChange={(e) =>
+                            persistDataset({
+                              ...dataset,
+                              settings: {
+                                ...dataset.settings,
+                                plannedShowBorder: e.target.checked,
+                              },
+                            })
+                          }
+                        />
+                        <span>Border Outline</span>
+                      </label>
+                      <label className="render-check-pill">
+                        <input
+                          type="checkbox"
+                          checked={dataset.settings.plannedShowDashes ?? true}
+                          onChange={(e) =>
+                            persistDataset({
+                              ...dataset,
+                              settings: {
+                                ...dataset.settings,
+                                plannedShowDashes: e.target.checked,
+                              },
+                            })
+                          }
+                        />
+                        <span>Center Dashes</span>
+                      </label>
+                      <label className="render-check-pill">
+                        <input
+                          type="checkbox"
+                          checked={dataset.settings.plannedShowTicks ?? true}
+                          onChange={(e) =>
+                            persistDataset({
+                              ...dataset,
+                              settings: {
+                                ...dataset.settings,
+                                plannedShowTicks: e.target.checked,
+                              },
+                            })
+                          }
+                        />
+                        <span>0.25-mi Ticks</span>
+                      </label>
+                    </div>
+                    <p className="helper-note" style={{ marginTop: 6 }}>
+                      Tip: Select any walk on the map to customize its thickness, border, dashes, or
+                      intersection gradient individually.
                     </p>
                   </div>
 
@@ -1872,75 +2107,375 @@ export const App: React.FC = () => {
           />
 
           {/* Selected Walk Floating Inspector Card (Never fights with editing!) */}
-          {editorMode === 'view' && selectedWalk && (
-            <div className="walk-inspector-card">
-              <div className="inspector-header">
-                <span
-                  className="inspector-color-badge"
-                  style={{
-                    background: resolveWalkColor(
-                      selectedWalk,
-                      dataset.settings,
-                      dataset.manualLayers
-                    ),
-                  }}
-                />
-                <div className="inspector-titles">
-                  <h4>{selectedWalk.title}</h4>
-                  <span>
-                    {selectedWalk.date || 'No date'} •{' '}
-                    <strong>{selectedWalk.distanceMiles} miles</strong> •{' '}
-                    {selectedWalk.status === 'planned'
-                      ? 'Planned (Graduated)'
-                      : selectedWalk.isSubwayWalk
-                      ? 'Subway Walk'
-                      : `Year ${getAutoYearGroup(selectedWalk)}`}
-                  </span>
+          {editorMode === 'view' && selectedWalk && (() => {
+            const effStyle = resolveEffectiveWalkStyle(
+              selectedWalk,
+              dataset.settings,
+              dataset.manualLayers
+            );
+            const isPlanned = selectedWalk.status === 'planned';
+            const badgeBg = effStyle.gradientEnabled
+              ? buildCssPingPongGradient(
+                  effStyle.gradientStartColor,
+                  effStyle.gradientEndColor,
+                  effStyle.gradientRepeats
+                )
+              : effStyle.color;
+
+            return (
+              <div className={`walk-inspector-card ${animState.active ? 'shifted-top' : ''}`}>
+                <div className="inspector-header">
+                  <span
+                    className="inspector-color-badge"
+                    style={{
+                      background: badgeBg,
+                    }}
+                  />
+                  <div className="inspector-titles">
+                    <h4>{selectedWalk.title}</h4>
+                    <span>
+                      {selectedWalk.date || 'No date'} •{' '}
+                      <strong>{selectedWalk.distanceMiles} miles</strong> •{' '}
+                      {isPlanned
+                        ? 'Planned Walk'
+                        : selectedWalk.isSubwayWalk
+                        ? 'Subway Walk'
+                        : `Year ${getAutoYearGroup(selectedWalk)}`}
+                    </span>
+                  </div>
+                  <button className="close-inspector" onClick={() => setSelectedWalkId(null)}>
+                    <X size={15} />
+                  </button>
                 </div>
-                <button className="close-inspector" onClick={() => setSelectedWalkId(null)}>
-                  <X size={15} />
-                </button>
-              </div>
-              {selectedWalk.notes && <p className="inspector-notes">{selectedWalk.notes}</p>}
-              <div className="inspector-actions">
-                {!staticMode && (
-                  <>
-                    <button
-                      className="insp-btn primary"
-                      onClick={() => startEditingWalk(selectedWalk)}
-                    >
-                      <Edit3 size={14} /> Edit Route / Details
-                    </button>
-                    {selectedWalk.status === 'planned' && (
+                {selectedWalk.notes && <p className="inspector-notes">{selectedWalk.notes}</p>}
+
+                <div className="inspector-actions">
+                  {!staticMode && (
+                    <>
                       <button
-                        className="insp-btn success"
-                        onClick={() => markPlannedWalkCompleted(selectedWalk)}
+                        className="insp-btn primary"
+                        onClick={() => startEditingWalk(selectedWalk)}
                       >
-                        <CheckCircle2 size={14} /> Mark Completed
+                        <Edit3 size={13} /> Edit Route
                       </button>
+                      {isPlanned && (
+                        <button
+                          className="insp-btn success"
+                          onClick={() => markPlannedWalkCompleted(selectedWalk)}
+                        >
+                          <CheckCircle2 size={13} /> Done
+                        </button>
+                      )}
+                    </>
+                  )}
+                  <button
+                    className={`insp-btn ${
+                      animState.active && animState.mode === 'single' ? 'active-style' : ''
+                    }`}
+                    onClick={() =>
+                      setAnimState((prev) => ({
+                        ...prev,
+                        active: true,
+                        playing: true,
+                        mode: 'single',
+                        currentWalkIndex: 0,
+                        currentWalkProgress: 0,
+                        cooldownProgress: 0,
+                        speed: 1.5,
+                      }))
+                    }
+                  >
+                    <Play size={13} /> Animate Walk
+                  </button>
+                  <button
+                    className={`insp-btn ${showInspectorStylePanel ? 'active-style' : ''}`}
+                    onClick={() => setShowInspectorStylePanel((v) => !v)}
+                    title="Customize thickness, border, dashes, and gradient mode"
+                  >
+                    <Sliders size={13} /> Render Style
+                  </button>
+                </div>
+
+                {/* Selected Walk Render Mode & Gradient Customizer */}
+                {showInspectorStylePanel && (
+                  <div className="inspector-style-panel">
+                    <div className="insp-style-header">
+                      <span>WALK RENDER &amp; INTERSECTION GRADIENT</span>
+                      {effStyle.hasCustomOverride && (
+                        <button
+                          type="button"
+                          className="reset-style-btn"
+                          onClick={() => updateWalkStyleOverride(selectedWalk.id, null)}
+                        >
+                          Reset Default
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Solid vs Gradient Toggle */}
+                    <div className="segmented-toggle" style={{ marginBottom: 8 }}>
+                      <button
+                        type="button"
+                        className={!effStyle.gradientEnabled ? 'active planned' : ''}
+                        onClick={() =>
+                          updateWalkStyleOverride(selectedWalk.id, { gradientEnabled: false })
+                        }
+                      >
+                        Solid Color
+                      </button>
+                      <button
+                        type="button"
+                        className={effStyle.gradientEnabled ? 'active planned' : ''}
+                        onClick={() =>
+                          updateWalkStyleOverride(selectedWalk.id, {
+                            gradientEnabled: true,
+                            gradientStartColor: effStyle.gradientStartColor || '#FF6D00',
+                            gradientEndColor: effStyle.gradientEndColor || '#00E5FF',
+                            gradientRepeats: effStyle.gradientRepeats || 1,
+                          })
+                        }
+                      >
+                        Gradient (Follow Hue)
+                      </button>
+                    </div>
+
+                    {!effStyle.gradientEnabled ? (
+                      <div className="style-control-row compact">
+                        <label>Line Color</label>
+                        <input
+                          type="color"
+                          value={effStyle.color}
+                          onChange={(e) =>
+                            updateWalkStyleOverride(selectedWalk.id, {
+                              color: e.target.value,
+                              gradientEnabled: false,
+                            })
+                          }
+                        />
+                      </div>
+                    ) : (
+                      <div className="gradient-config-box">
+                        <div
+                          className="gradient-preview-bar"
+                          style={{
+                            background: buildCssPingPongGradient(
+                              effStyle.gradientStartColor,
+                              effStyle.gradientEndColor,
+                              effStyle.gradientRepeats
+                            ),
+                          }}
+                        >
+                          <span>START</span>
+                          <span>
+                            {effStyle.gradientRepeats === 1
+                              ? '1x (Start → Finish)'
+                              : `${effStyle.gradientRepeats}x Smooth Alternating`}
+                          </span>
+                          <span>END</span>
+                        </div>
+
+                        <div className="gradient-color-row">
+                          <label className="grad-color-pick">
+                            <span>Color A</span>
+                            <input
+                              type="color"
+                              value={effStyle.gradientStartColor}
+                              onChange={(e) =>
+                                updateWalkStyleOverride(selectedWalk.id, {
+                                  gradientEnabled: true,
+                                  gradientStartColor: e.target.value,
+                                })
+                              }
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="mini-btn"
+                            title="Swap Start & End Colors"
+                            onClick={() =>
+                              updateWalkStyleOverride(selectedWalk.id, {
+                                gradientEnabled: true,
+                                gradientStartColor: effStyle.gradientEndColor,
+                                gradientEndColor: effStyle.gradientStartColor,
+                              })
+                            }
+                          >
+                            <ArrowLeftRight size={12} /> Swap
+                          </button>
+                          <label className="grad-color-pick">
+                            <span>Color B</span>
+                            <input
+                              type="color"
+                              value={effStyle.gradientEndColor}
+                              onChange={(e) =>
+                                updateWalkStyleOverride(selectedWalk.id, {
+                                  gradientEnabled: true,
+                                  gradientEndColor: e.target.value,
+                                })
+                              }
+                            />
+                          </label>
+                        </div>
+
+                        {/* Quick Gradient Presets */}
+                        <div className="gradient-presets-row">
+                          {[
+                            { label: 'Orange→Cyan', a: '#FF6D00', b: '#00E5FF' },
+                            { label: 'Gold→Magenta', a: '#FFD600', b: '#D500F9' },
+                            { label: 'Lime→Blue', a: '#00E676', b: '#2979FF' },
+                            { label: 'Red→Yellow', a: '#FF1744', b: '#FFEA00' },
+                          ].map((preset) => (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              className="grad-preset-chip"
+                              onClick={() =>
+                                updateWalkStyleOverride(selectedWalk.id, {
+                                  gradientEnabled: true,
+                                  gradientStartColor: preset.a,
+                                  gradientEndColor: preset.b,
+                                })
+                              }
+                            >
+                              <span
+                                className="preset-swatch"
+                                style={{
+                                  background: `linear-gradient(90deg, ${preset.a}, ${preset.b})`,
+                                }}
+                              />
+                              {preset.label}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="style-control-row compact">
+                          <label>
+                            Repeats ({effStyle.gradientRepeats}x{' '}
+                            {effStyle.gradientRepeats === 1
+                              ? 'A → B'
+                              : effStyle.gradientRepeats === 2
+                              ? 'A → B → A'
+                              : effStyle.gradientRepeats === 3
+                              ? 'A → B → A → B'
+                              : 'smooth ping-pong'}
+                            )
+                          </label>
+                          <input
+                            type="range"
+                            min={1}
+                            max={8}
+                            step={1}
+                            value={effStyle.gradientRepeats}
+                            onChange={(e) =>
+                              updateWalkStyleOverride(selectedWalk.id, {
+                                gradientEnabled: true,
+                                gradientRepeats: Number(e.target.value),
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
                     )}
-                  </>
+
+                    {/* Thickness Slider */}
+                    <div className="style-control-row compact">
+                      <label>Line Thickness ({effStyle.width} px)</label>
+                      <input
+                        type="range"
+                        min={1.5}
+                        max={10}
+                        step={0.5}
+                        value={effStyle.width}
+                        onChange={(e) =>
+                          updateWalkStyleOverride(selectedWalk.id, {
+                            width: Number(e.target.value),
+                          })
+                        }
+                      />
+                    </div>
+
+                    {/* Border Thickness Slider when Border is enabled */}
+                    {effStyle.showBorder && (
+                      <div className="style-control-row compact">
+                        <label>Border Outline (+{effStyle.borderWidth} px)</label>
+                        <input
+                          type="range"
+                          min={0.5}
+                          max={6}
+                          step={0.5}
+                          value={effStyle.borderWidth}
+                          onChange={(e) =>
+                            updateWalkStyleOverride(selectedWalk.id, {
+                              borderWidth: Number(e.target.value),
+                            })
+                          }
+                        />
+                      </div>
+                    )}
+
+                    {/* Toggle Pills: Border, Center Dashes, Mile Ticks, Selection Glow */}
+                    <div className="render-toggles-grid">
+                      <label className="render-check-pill">
+                        <input
+                          type="checkbox"
+                          checked={effStyle.showBorder}
+                          onChange={(e) =>
+                            updateWalkStyleOverride(selectedWalk.id, {
+                              showBorder: e.target.checked,
+                            })
+                          }
+                        />
+                        <span>Border Outline</span>
+                      </label>
+
+                      {isPlanned && (
+                        <>
+                          <label className="render-check-pill">
+                            <input
+                              type="checkbox"
+                              checked={effStyle.showDashes}
+                              onChange={(e) =>
+                                updateWalkStyleOverride(selectedWalk.id, {
+                                  showDashes: e.target.checked,
+                                })
+                              }
+                            />
+                            <span>Center Dashes</span>
+                          </label>
+
+                          <label className="render-check-pill">
+                            <input
+                              type="checkbox"
+                              checked={effStyle.showTicks}
+                              onChange={(e) =>
+                                updateWalkStyleOverride(selectedWalk.id, {
+                                  showTicks: e.target.checked,
+                                })
+                              }
+                            />
+                            <span>0.25-mi Ticks</span>
+                          </label>
+                        </>
+                      )}
+
+                      <label className="render-check-pill">
+                        <input
+                          type="checkbox"
+                          checked={effStyle.showSelectionGlow}
+                          onChange={(e) =>
+                            updateWalkStyleOverride(selectedWalk.id, {
+                              showSelectionGlow: e.target.checked,
+                            })
+                          }
+                        />
+                        <span>Yellow Halo</span>
+                      </label>
+                    </div>
+                  </div>
                 )}
-                <button
-                  className="insp-btn"
-                  onClick={() =>
-                    setAnimState((prev) => ({
-                      ...prev,
-                      active: true,
-                      playing: true,
-                      mode: 'single',
-                      currentWalkIndex: 0,
-                      currentWalkProgress: 0,
-                      cooldownProgress: 0,
-                      speed: 1.5,
-                    }))
-                  }
-                >
-                  <Play size={14} /> Animate Walk
-                </button>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* Phone Screenshot / PDF Framing Floating Toolbar */}
           {showScreenshotPanel && (
