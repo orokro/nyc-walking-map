@@ -2,25 +2,51 @@ const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const http = require('http');
-const { exec } = require('child_process');
-const { promisify } = require('util');
 const express = require('express');
 const cors = require('cors');
 const JSZip = require('jszip');
 
-const execAsync = promisify(exec);
 const PORT = 3456;
-const ROOT_DIR = path.resolve(__dirname, '..');
-const DATA_DIR = path.join(ROOT_DIR, 'public', 'data');
+
+// APP_BUNDLE_ROOT points to the bundled resources (inside app.asar or project root in dev)
+const APP_BUNDLE_ROOT = path.resolve(__dirname, '..');
+const BUNDLED_DIST_DIR = path.join(APP_BUNDLE_ROOT, 'dist');
+const BUNDLED_DATA_DIR = path.join(APP_BUNDLE_ROOT, 'public', 'data');
+
+// Determine writable storage root:
+// 1. If the user's primary project workspace exists on this machine, use it directly
+//    so the installed Desktop app and the git repo share the exact same walks.json & tile_cache!
+// 2. Otherwise (e.g. installed on another PC), use Electron's writable userData folder
+//    and seed it from BUNDLED_DATA_DIR.
+const DEV_WORKSPACE_DIR = 'C:\\cygwin64\\home\\geem4\\projects\\walks_map';
+const useWorkspaceDir = fs.existsSync(path.join(DEV_WORKSPACE_DIR, 'public', 'data', 'walks.json'));
+
+const STORAGE_ROOT = useWorkspaceDir ? DEV_WORKSPACE_DIR : app.getPath('userData');
+const DATA_DIR = useWorkspaceDir
+  ? path.join(STORAGE_ROOT, 'public', 'data')
+  : path.join(STORAGE_ROOT, 'data');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
-const TILE_CACHE_DIR = path.join(ROOT_DIR, 'tile_cache');
-const DIST_DIR = path.join(ROOT_DIR, 'dist');
+const TILE_CACHE_DIR = path.join(STORAGE_ROOT, 'tile_cache');
 const WALKS_FILE = path.join(DATA_DIR, 'walks.json');
 const BOROUGHS_FILE = path.join(DATA_DIR, 'borough-lines.geojson');
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 fs.mkdirSync(BACKUP_DIR, { recursive: true });
 fs.mkdirSync(TILE_CACHE_DIR, { recursive: true });
+
+// Seed initial data files if running in a fresh userData directory
+for (const file of [
+  'walks.json',
+  'borough-lines.geojson',
+  'transit-subway.geojson',
+  'transit-rail.geojson',
+]) {
+  const destFile = path.join(DATA_DIR, file);
+  const bundledFile = path.join(BUNDLED_DATA_DIR, file);
+  if (!fs.existsSync(destFile) && fs.existsSync(bundledFile)) {
+    fs.copyFileSync(bundledFile, destFile);
+  }
+}
 
 const TILE_PROVIDERS = {
   'google-roadmap': {
@@ -453,14 +479,19 @@ function startEmbeddedExpressServer() {
       res.json({ cancelled: true, prefetch: prefetchState });
     });
 
+    // Self-contained Static Website Exporter (works inside packaged .exe without Vite CLI!)
     serverApp.post('/api/export/static', async (req, res) => {
       try {
         const { includeCachedOpenTiles = true } = req.body || {};
-        const outDir = path.join(ROOT_DIR, 'dist-static');
-        await execAsync('npx vite build --outDir dist-static', {
-          cwd: ROOT_DIR,
-          env: { ...process.env, VITE_STATIC_EXPORT: 'true' },
-        });
+        const outDir = path.join(STORAGE_ROOT, 'dist-static');
+        fs.mkdirSync(outDir, { recursive: true });
+
+        // Copy pre-built dist/ UI assets into dist-static/
+        if (fs.existsSync(BUNDLED_DIST_DIR)) {
+          fs.cpSync(BUNDLED_DIST_DIR, outDir, { recursive: true });
+        }
+
+        // Copy latest walks.json and geojson overlays into dist-static/data/
         const destDataDir = path.join(outDir, 'data');
         fs.mkdirSync(destDataDir, { recursive: true });
         for (const file of [
@@ -470,7 +501,12 @@ function startEmbeddedExpressServer() {
           'transit-rail.geojson',
         ]) {
           const src = path.join(DATA_DIR, file);
-          if (fs.existsSync(src)) fs.copyFileSync(src, path.join(destDataDir, file));
+          const fallbackSrc = path.join(BUNDLED_DATA_DIR, file);
+          if (fs.existsSync(src)) {
+            fs.copyFileSync(src, path.join(destDataDir, file));
+          } else if (fs.existsSync(fallbackSrc)) {
+            fs.copyFileSync(fallbackSrc, path.join(destDataDir, file));
+          }
         }
 
         const bundledProviders = [];
@@ -487,7 +523,7 @@ function startEmbeddedExpressServer() {
         }
 
         fs.writeFileSync(
-          path.join(outDir, 'data', 'static-manifest.json'),
+          path.join(destDataDir, 'static-manifest.json'),
           JSON.stringify(
             {
               exportedAt: new Date().toISOString(),
@@ -499,16 +535,20 @@ function startEmbeddedExpressServer() {
           ),
           'utf-8'
         );
+
+        shell.openPath(outDir);
         res.json({ ok: true, outputPath: outDir, bundledOpenProviders: bundledProviders });
       } catch (err) {
         res.status(500).json({ error: err.message });
       }
     });
 
-    if (fs.existsSync(DIST_DIR)) {
-      serverApp.use(express.static(DIST_DIR));
+    // Serve active data directory at /data so ./data/*.geojson fetches latest files
+    serverApp.use('/data', express.static(DATA_DIR));
+    if (fs.existsSync(BUNDLED_DIST_DIR)) {
+      serverApp.use(express.static(BUNDLED_DIST_DIR));
     }
-    serverApp.use(express.static(path.join(ROOT_DIR, 'public')));
+    serverApp.use(express.static(path.join(APP_BUNDLE_ROOT, 'public')));
 
     const srv = serverApp.listen(PORT, '127.0.0.1', () => {
       console.log(`[Electron Embedded Express] Listening on http://127.0.0.1:${PORT}`);
@@ -527,7 +567,7 @@ function startEmbeddedExpressServer() {
   });
 }
 
-function checkUrlAlive(url, timeout = 500) {
+function checkUrlAlive(url, timeout = 450) {
   return new Promise((resolve) => {
     const req = http
       .get(url, (res) => {
@@ -547,6 +587,8 @@ let mainWindow = null;
 async function createWindow() {
   await startEmbeddedExpressServer();
 
+  const iconPath = path.join(APP_BUNDLE_ROOT, 'build', 'icon.ico');
+
   mainWindow = new BrowserWindow({
     width: 1540,
     height: 960,
@@ -554,6 +596,7 @@ async function createWindow() {
     minHeight: 680,
     title: 'NYC Walks Map — Coverage Tracker & Route Planner',
     backgroundColor: '#090d16',
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -562,12 +605,15 @@ async function createWindow() {
 
   mainWindow.setMenuBarVisibility(false);
 
-  // If Vite dev server is running (npm run dev), use it for HMR; otherwise load from embedded Express server
-  const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
-  const isDevRunning = await checkUrlAlive(devUrl, 450);
-
-  if (isDevRunning) {
-    mainWindow.loadURL(devUrl);
+  // Use Vite dev server only if running unpacked in development
+  if (!app.isPackaged) {
+    const devUrl = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
+    const isDevRunning = await checkUrlAlive(devUrl, 400);
+    if (isDevRunning) {
+      mainWindow.loadURL(devUrl);
+    } else {
+      mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
+    }
   } else {
     mainWindow.loadURL(`http://127.0.0.1:${PORT}`);
   }

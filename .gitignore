@@ -1,6 +1,7 @@
 node_modules/
 dist/
 dist-static/
+release/
 tile_cache/
 *.log
 .DS_Store
