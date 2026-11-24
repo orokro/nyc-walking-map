@@ -50,7 +50,12 @@ import {
 } from './utils/geo';
 import { MapCanvas, AnimationState, ViewportFrameConfig } from './components/MapCanvas';
 import { exportMapScreenshot } from './utils/screenshotExport';
-import { exportDatasetToKmzBlob, parseKmzFileToWalks } from './utils/clientKmz';
+import {
+  exportDatasetToKmzBlob,
+  parseKmzFileToWalks,
+  downloadWalksForMyMaps,
+  getMyMapsFolderName,
+} from './utils/clientKmz';
 
 const IS_STATIC_BUILD = import.meta.env.VITE_STATIC_EXPORT === 'true';
 
@@ -500,6 +505,53 @@ export const App: React.FC = () => {
     },
     [dataset, persistDataset]
   );
+
+  // Google My Maps Selective Export & Merge Queue States
+  const [exportSelectedIds, setExportSelectedIds] = useState<string[]>([]);
+  const [exportLayerFilter, setExportLayerFilter] = useState<string>('ALL');
+  const [exportSearchQuery, setExportSearchQuery] = useState<string>('');
+  const [exportStyleMode, setExportStyleMode] = useState<'mymaps-standard' | 'app-custom'>(
+    'mymaps-standard'
+  );
+
+  const exportSelectedSet = useMemo(() => new Set(exportSelectedIds), [exportSelectedIds]);
+
+  const toggleExportWalkId = useCallback((walkId: string) => {
+    setExportSelectedIds((prev) =>
+      prev.includes(walkId) ? prev.filter((id) => id !== walkId) : [...prev, walkId]
+    );
+  }, []);
+
+  const exportFilteredWalks = useMemo(() => {
+    if (!dataset) return [];
+    const q = exportSearchQuery.trim().toLowerCase();
+    return [...dataset.walks]
+      .filter((w) => {
+        const folder = getMyMapsFolderName(w, dataset);
+        if (exportLayerFilter !== 'ALL' && folder !== exportLayerFilter) return false;
+        if (q && !`${w.date} ${w.title} ${w.notes} ${folder}`.toLowerCase().includes(q)) {
+          return false;
+        }
+        return true;
+      })
+      .sort((a, b) => {
+        if (a.status === 'planned' && b.status !== 'planned') return -1;
+        if (b.status === 'planned' && a.status !== 'planned') return 1;
+        return (b.date || '').localeCompare(a.date || '');
+      });
+  }, [dataset, exportLayerFilter, exportSearchQuery]);
+
+  const exportSelectedWalksList = useMemo(() => {
+    if (!dataset) return [];
+    return dataset.walks.filter((w) => exportSelectedSet.has(w.id));
+  }, [dataset, exportSelectedSet]);
+
+  const myMapsLayerOptions = useMemo(() => {
+    if (!dataset) return ['ALL'];
+    const set = new Set<string>(['To Walk', '2026', 'Subway Walks']);
+    dataset.walks.forEach((w) => set.add(getMyMapsFolderName(w, dataset)));
+    return ['ALL', ...Array.from(set)];
+  }, [dataset]);
 
   // Animation Loop
   const completedWalksChronological = useMemo(() => {
@@ -1106,6 +1158,59 @@ export const App: React.FC = () => {
 
               {sidebarTab === 'layers' && (
                 <div className="sidebar-content">
+                  {/* Pinned Google My Maps Merge Queue Banner when 1+ walks are queued */}
+                  {exportSelectedWalksList.length > 0 && (
+                    <div className="mymaps-queue-banner">
+                      <div className="queue-banner-top">
+                        <span>
+                          <strong>{exportSelectedWalksList.length}</strong>{' '}
+                          {exportSelectedWalksList.length === 1 ? 'walk' : 'walks'} queued for
+                          Google My Maps
+                        </span>
+                        <button
+                          type="button"
+                          className="queue-clear-link"
+                          onClick={() => setExportSelectedIds([])}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                      <div className="queue-banner-btns">
+                        <button
+                          type="button"
+                          className="mini-btn primary-grad"
+                          onClick={() =>
+                            downloadWalksForMyMaps(exportSelectedWalksList, dataset, {
+                              format: 'kml',
+                              styleMode: exportStyleMode,
+                            })
+                          }
+                        >
+                          <Download size={12} /> Export .KML (Merge)
+                        </button>
+                        <button
+                          type="button"
+                          className="mini-btn"
+                          onClick={() =>
+                            downloadWalksForMyMaps(exportSelectedWalksList, dataset, {
+                              format: 'kmz',
+                              styleMode: exportStyleMode,
+                            })
+                          }
+                        >
+                          <Download size={12} /> .KMZ
+                        </button>
+                        <button
+                          type="button"
+                          className="mini-btn"
+                          onClick={() => setSidebarTab('export')}
+                        >
+                          Manage
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Search Box */}
                   <div className="search-box">
                     <Search size={15} />
@@ -1222,42 +1327,54 @@ export const App: React.FC = () => {
 
                     {expandedYears.planned && (
                       <div className="walk-list">
-                        {stats.plannedWalks.map((w) => (
-                          <div
-                            key={w.id}
-                            className={`walk-row ${selectedWalkId === w.id ? 'selected' : ''}`}
-                            onClick={() => flyToWalk(w)}
-                          >
-                            <div className="walk-row-main">
-                              <span className="walk-title">{w.title}</span>
-                              <span className="walk-sub">
-                                {w.date ? `${w.date} • ` : ''}
-                                <strong>{w.distanceMiles} mi</strong> (0.25mi ticks)
-                              </span>
-                            </div>
-                            {!staticMode && (
+                        {stats.plannedWalks.map((w) => {
+                          const isQueued = exportSelectedSet.has(w.id);
+                          return (
+                            <div
+                              key={w.id}
+                              className={`walk-row ${selectedWalkId === w.id ? 'selected' : ''}`}
+                              onClick={() => flyToWalk(w)}
+                            >
+                              <div className="walk-row-main">
+                                <span className="walk-title">{w.title}</span>
+                                <span className="walk-sub">
+                                  {w.date ? `${w.date} • ` : ''}
+                                  <strong>{w.distanceMiles} mi</strong> (0.25mi ticks)
+                                </span>
+                              </div>
                               <div
                                 className="walk-row-actions"
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 <button
-                                  className="mini-action complete"
-                                  title="Mark Planned Walk as Completed"
-                                  onClick={() => markPlannedWalkCompleted(w)}
+                                  className={`mini-action ${isQueued ? 'queued' : ''}`}
+                                  title="Queue walk for Google My Maps KML/KMZ Export & Merge"
+                                  onClick={() => toggleExportWalkId(w.id)}
                                 >
-                                  <CheckCircle2 size={14} /> Done
+                                  {isQueued ? '✓ KML' : '+KML'}
                                 </button>
-                                <button
-                                  className="mini-action"
-                                  title="Edit Route"
-                                  onClick={() => startEditingWalk(w)}
-                                >
-                                  <Edit3 size={14} />
-                                </button>
+                                {!staticMode && (
+                                  <>
+                                    <button
+                                      className="mini-action complete"
+                                      title="Mark Planned Walk as Completed"
+                                      onClick={() => markPlannedWalkCompleted(w)}
+                                    >
+                                      <CheckCircle2 size={14} /> Done
+                                    </button>
+                                    <button
+                                      className="mini-action"
+                                      title="Edit Route"
+                                      onClick={() => startEditingWalk(w)}
+                                    >
+                                      <Edit3 size={14} />
+                                    </button>
+                                  </>
+                                )}
                               </div>
-                            )}
-                          </div>
-                        ))}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -1301,34 +1418,44 @@ export const App: React.FC = () => {
 
                     {expandedYears.subway && (
                       <div className="walk-list">
-                        {stats.subwayWalks.map((w) => (
-                          <div
-                            key={w.id}
-                            className={`walk-row ${selectedWalkId === w.id ? 'selected' : ''}`}
-                            onClick={() => flyToWalk(w)}
-                          >
-                            <div className="walk-row-main">
-                              <span className="walk-title">{w.title}</span>
-                              <span className="walk-sub">
-                                {w.date} • <strong>{w.distanceMiles} mi</strong>
-                              </span>
-                            </div>
-                            {!staticMode && (
+                        {stats.subwayWalks.map((w) => {
+                          const isQueued = exportSelectedSet.has(w.id);
+                          return (
+                            <div
+                              key={w.id}
+                              className={`walk-row ${selectedWalkId === w.id ? 'selected' : ''}`}
+                              onClick={() => flyToWalk(w)}
+                            >
+                              <div className="walk-row-main">
+                                <span className="walk-title">{w.title}</span>
+                                <span className="walk-sub">
+                                  {w.date} • <strong>{w.distanceMiles} mi</strong>
+                                </span>
+                              </div>
                               <div
                                 className="walk-row-actions"
                                 onClick={(e) => e.stopPropagation()}
                               >
                                 <button
-                                  className="mini-action"
-                                  title="Edit Walk"
-                                  onClick={() => startEditingWalk(w)}
+                                  className={`mini-action ${isQueued ? 'queued' : ''}`}
+                                  title="Queue walk for Google My Maps KML/KMZ Export & Merge"
+                                  onClick={() => toggleExportWalkId(w.id)}
                                 >
-                                  <Edit3 size={14} />
+                                  {isQueued ? '✓ KML' : '+KML'}
                                 </button>
+                                {!staticMode && (
+                                  <button
+                                    className="mini-action"
+                                    title="Edit Walk"
+                                    onClick={() => startEditingWalk(w)}
+                                  >
+                                    <Edit3 size={14} />
+                                  </button>
+                                )}
                               </div>
-                            )}
-                          </div>
-                        ))}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -1404,36 +1531,46 @@ export const App: React.FC = () => {
 
                           {isExp && (
                             <div className="walk-list">
-                              {grp.walks.map((w) => (
-                                <div
-                                  key={w.id}
-                                  className={`walk-row ${
-                                    selectedWalkId === w.id ? 'selected' : ''
-                                  }`}
-                                  onClick={() => flyToWalk(w)}
-                                >
-                                  <div className="walk-row-main">
-                                    <span className="walk-title">{w.title}</span>
-                                    <span className="walk-sub">
-                                      {w.date} • <strong>{w.distanceMiles} mi</strong>
-                                    </span>
-                                  </div>
-                                  {!staticMode && (
+                              {grp.walks.map((w) => {
+                                const isQueued = exportSelectedSet.has(w.id);
+                                return (
+                                  <div
+                                    key={w.id}
+                                    className={`walk-row ${
+                                      selectedWalkId === w.id ? 'selected' : ''
+                                    }`}
+                                    onClick={() => flyToWalk(w)}
+                                  >
+                                    <div className="walk-row-main">
+                                      <span className="walk-title">{w.title}</span>
+                                      <span className="walk-sub">
+                                        {w.date} • <strong>{w.distanceMiles} mi</strong>
+                                      </span>
+                                    </div>
                                     <div
                                       className="walk-row-actions"
                                       onClick={(e) => e.stopPropagation()}
                                     >
                                       <button
-                                        className="mini-action"
-                                        title="Edit Walk"
-                                        onClick={() => startEditingWalk(w)}
+                                        className={`mini-action ${isQueued ? 'queued' : ''}`}
+                                        title="Queue walk for Google My Maps KML/KMZ Export & Merge"
+                                        onClick={() => toggleExportWalkId(w.id)}
                                       >
-                                        <Edit3 size={14} />
+                                        {isQueued ? '✓ KML' : '+KML'}
                                       </button>
+                                      {!staticMode && (
+                                        <button
+                                          className="mini-action"
+                                          title="Edit Walk"
+                                          onClick={() => startEditingWalk(w)}
+                                        >
+                                          <Edit3 size={14} />
+                                        </button>
+                                      )}
                                     </div>
-                                  )}
-                                </div>
-                              ))}
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                         </div>
@@ -1917,16 +2054,172 @@ export const App: React.FC = () => {
 
               {sidebarTab === 'export' && (
                 <div className="sidebar-content export-tab">
-                  {/* KMZ Round-Trip Export / Import */}
+                  {/* Selective Export for Google My Maps (Import & Merge) */}
                   <div className="layer-section">
-                    <div className="section-title">GOOGLE MY MAPS (.KMZ) ROUND-TRIP</div>
+                    <div className="section-title">
+                      EXPORT 1+ WALKS FOR GOOGLE MY MAPS (IMPORT &amp; MERGE)
+                    </div>
                     <p className="helper-note">
-                      Export all walks and borough boundaries to a clean, normalized{' '}
-                      <code>Walks.kmz</code> file that imports directly into Google My Maps.
+                      Pick one or more walks below to export a <code>.kml</code> or{' '}
+                      <code>.kmz</code> file. In Google My Maps, click <strong>⋮</strong> on your
+                      target layer (e.g. <code>2026</code> or <code>To Walk</code>) →{' '}
+                      <strong>Reimport and merge</strong> → <strong>Add more items</strong>.
+                    </p>
+
+                    <div className="mymaps-filter-row">
+                      <select
+                        value={exportLayerFilter}
+                        onChange={(e) => setExportLayerFilter(e.target.value)}
+                        title="Filter walks by Google My Maps Layer"
+                      >
+                        {myMapsLayerOptions.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {opt === 'ALL' ? 'All Layers / Folders' : `Layer: ${opt}`}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="text"
+                        value={exportSearchQuery}
+                        onChange={(e) => setExportSearchQuery(e.target.value)}
+                        placeholder="Search date or title..."
+                      />
+                    </div>
+
+                    <div className="mymaps-batch-links">
+                      {selectedWalk && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!exportSelectedSet.has(selectedWalk.id)) {
+                              setExportSelectedIds((prev) => [...prev, selectedWalk.id]);
+                            }
+                          }}
+                        >
+                          + Active Walk
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = new Set(exportSelectedIds);
+                          exportFilteredWalks.forEach((w) => next.add(w.id));
+                          setExportSelectedIds(Array.from(next));
+                        }}
+                      >
+                        Select Shown ({exportFilteredWalks.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setExportSelectedIds([])}
+                        disabled={exportSelectedIds.length === 0}
+                      >
+                        Clear ({exportSelectedIds.length})
+                      </button>
+                    </div>
+
+                    <div className="mymaps-checklist">
+                      {exportFilteredWalks.slice(0, 120).map((w) => {
+                        const checked = exportSelectedSet.has(w.id);
+                        const folder = getMyMapsFolderName(w, dataset);
+                        return (
+                          <label
+                            key={w.id}
+                            className={`mymaps-check-row ${checked ? 'checked' : ''}`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleExportWalkId(w.id)}
+                            />
+                            <div className="mymaps-check-info">
+                              <span className="mymaps-check-title">
+                                {w.date ? `${w.date} ` : ''}
+                                {w.title}
+                              </span>
+                              <span className="mymaps-check-sub">
+                                {w.distanceMiles} mi • <span className="folder-pill">{folder}</span>
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              className="mini-single-kml-btn"
+                              title="Download just this walk as .KML"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                downloadWalksForMyMaps([w], dataset, {
+                                  format: 'kml',
+                                  styleMode: exportStyleMode,
+                                });
+                              }}
+                            >
+                              .KML
+                            </button>
+                          </label>
+                        );
+                      })}
+                      {exportFilteredWalks.length === 0 && (
+                        <div className="empty-filter-msg">No walks match that filter.</div>
+                      )}
+                    </div>
+
+                    <div className="form-group" style={{ marginTop: 8 }}>
+                      <label>Line Color &amp; Style in Google My Maps</label>
+                      <select
+                        value={exportStyleMode}
+                        onChange={(e) =>
+                          setExportStyleMode(e.target.value as 'mymaps-standard' | 'app-custom')
+                        }
+                      >
+                        <option value="mymaps-standard">
+                          Google My Maps Classic (#0288D1 Blue / #0097A7 Subway)
+                        </option>
+                        <option value="app-custom">Keep Custom App Color &amp; Thickness</option>
+                      </select>
+                    </div>
+
+                    <div className="export-btn-stack" style={{ marginTop: 8 }}>
+                      <button
+                        className="full-btn primary"
+                        disabled={exportSelectedWalksList.length === 0}
+                        onClick={() =>
+                          downloadWalksForMyMaps(exportSelectedWalksList, dataset, {
+                            format: 'kml',
+                            styleMode: exportStyleMode,
+                          })
+                        }
+                      >
+                        <Download size={15} /> Export Selected ({exportSelectedWalksList.length}) as
+                        .KML (Merge)
+                      </button>
+                      <button
+                        className="full-btn"
+                        disabled={exportSelectedWalksList.length === 0}
+                        onClick={() =>
+                          downloadWalksForMyMaps(exportSelectedWalksList, dataset, {
+                            format: 'kmz',
+                            styleMode: exportStyleMode,
+                          })
+                        }
+                      >
+                        <Download size={15} /> Export Selected ({exportSelectedWalksList.length}) as
+                        .KMZ
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Full Dataset KMZ Round-Trip Export / Import */}
+                  <div className="layer-section">
+                    <div className="section-title">FULL DATASET BACKUP (.KMZ ROUND-TRIP)</div>
+                    <p className="helper-note">
+                      Export all walks and borough boundaries to a complete{' '}
+                      <code>Walks.kmz</code> archive, or import walks from an external{' '}
+                      <code>.kmz</code> / <code>.kml</code> file.
                     </p>
                     <div className="export-btn-stack">
-                      <button className="full-btn primary" onClick={handleExportKmz}>
-                        <Download size={15} /> Export Walks.kmz
+                      <button className="full-btn" onClick={handleExportKmz}>
+                        <Download size={15} /> Export Full Walks.kmz ({dataset.walks.length} walks)
                       </button>
                       {!staticMode && (
                         <>
@@ -2193,6 +2486,33 @@ export const App: React.FC = () => {
                     title="Customize thickness, border, dashes, and gradient mode"
                   >
                     <Sliders size={13} /> Render Style
+                  </button>
+                  <button
+                    className="insp-btn"
+                    title="Export this walk as .KML to Reimport & Merge into Google My Maps"
+                    onClick={() =>
+                      downloadWalksForMyMaps([selectedWalk], dataset, {
+                        format: 'kml',
+                        styleMode: exportStyleMode,
+                      })
+                    }
+                  >
+                    <Download size={13} /> Export .KML
+                  </button>
+                  <button
+                    className={`insp-btn ${
+                      exportSelectedSet.has(selectedWalk.id) ? 'active-style' : ''
+                    }`}
+                    title="Add/remove this walk from the multi-walk Google My Maps export queue"
+                    onClick={() => toggleExportWalkId(selectedWalk.id)}
+                  >
+                    {exportSelectedSet.has(selectedWalk.id)
+                      ? `✓ Queued (${exportSelectedWalksList.length})`
+                      : `+ Queue${
+                          exportSelectedWalksList.length > 0
+                            ? ` (${exportSelectedWalksList.length})`
+                            : ''
+                        }`}
                   </button>
                 </div>
 

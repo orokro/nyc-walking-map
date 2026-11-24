@@ -21,10 +21,41 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
-export async function exportDatasetToKmzBlob(
+export function getMyMapsFolderName(walk: WalkItem, dataset?: WalkDataset): string {
+  if (walk.isSubwayWalk) return 'Subway Walks';
+  if (walk.status === 'planned') {
+    if (walk.manualLayerId === 'other' || walk.originalFolder === 'Other') return 'Other';
+    return 'To Walk';
+  }
+  if (walk.manualLayerId && dataset) {
+    const ml = dataset.manualLayers.find((l) => l.id === walk.manualLayerId);
+    if (ml) return ml.name;
+  }
+  const yr = walk.date ? walk.date.substring(0, 4) : walk.year || '2026';
+  return yr === '2020' || yr === '2021' ? '2020 / 2021' : yr;
+}
+
+export function formatMyMapsPlacemarkName(walk: WalkItem): string {
+  const title = (walk.title || 'Untitled Walk').trim();
+  if (!walk.date) return title;
+  if (title.startsWith(walk.date)) return title;
+  return `${walk.date} ${title}`;
+}
+
+export interface MyMapsExportOptions {
+  format?: 'kml' | 'kmz';
+  styleMode?: 'mymaps-standard' | 'app-custom';
+  includeBoroughLines?: boolean;
+  boroughGeoJson?: any;
+  documentName?: string;
+}
+
+export function buildKmlForWalks(
+  walksToExport: WalkItem[],
   dataset: WalkDataset,
-  boroughGeoJson?: any
-): Promise<Blob> {
+  options: MyMapsExportOptions = {}
+): string {
+  const styleMode = options.styleMode || 'mymaps-standard';
   const foldersMap = new Map<string, { name: string; placemarks: string[] }>();
   const ensureFolder = (name: string) => {
     if (!foldersMap.has(name)) {
@@ -33,22 +64,28 @@ export async function exportDatasetToKmzBlob(
     return foldersMap.get(name)!;
   };
 
-  const styleSet = new Map<string, { id: string; colorHex: string; width: number }>();
-  const registerStyle = (colorHex: string, width: number) => {
+  const styleSet = new Map<
+    string,
+    { id: string; colorHex: string; width: number; hasDesc: boolean }
+  >();
+  const registerStyle = (colorHex: string, width: number, hasDesc: boolean) => {
     const cleanHex = (colorHex || '#0288D1').replace('#', '').toUpperCase();
     const wInt = Math.round(width * 1000);
-    const id = `line-${cleanHex}-${wInt}-nodesc`;
+    const suffix = hasDesc ? '' : '-nodesc';
+    const id = `line-${cleanHex}-${wInt}${suffix}`;
     if (!styleSet.has(id)) {
-      styleSet.set(id, { id, colorHex: `#${cleanHex}`, width });
+      styleSet.set(id, { id, colorHex: `#${cleanHex}`, width, hasDesc });
     }
     return id;
   };
 
-  if (boroughGeoJson && Array.isArray(boroughGeoJson.features)) {
+  const boroughGeoJson = options.boroughGeoJson;
+  if (options.includeBoroughLines && boroughGeoJson && Array.isArray(boroughGeoJson.features)) {
     const bFolder = ensureFolder('Borough LInes');
     const styleId = registerStyle(
       dataset.settings.boroughLineColor || '#E65100',
-      dataset.settings.boroughLineWidth || 3.0
+      dataset.settings.boroughLineWidth || 3.131,
+      false
     );
     for (const feat of boroughGeoJson.features) {
       const name = feat.properties?.name || 'Borough';
@@ -67,32 +104,46 @@ export async function exportDatasetToKmzBlob(
     }
   }
 
-  for (const walk of dataset.walks) {
-    let folderName = 'Other';
-    let colorHex = dataset.settings.completedWalkColor || '#0288D1';
-    let width = dataset.settings.completedWalkWidth || 3.2;
+  for (const walk of walksToExport) {
+    const folderName = getMyMapsFolderName(walk, dataset);
+    let colorHex = '#0288D1';
+    let width = 3.131;
 
-    if (walk.isSubwayWalk) {
-      folderName = 'Subway Walks';
-      colorHex = dataset.settings.subwayWalkColor || '#0097A7';
-      width = dataset.settings.subwayWalkWidth || 3.2;
-    } else if (walk.status === 'planned') {
-      folderName = walk.manualLayerId === 'other' ? 'Other' : 'To Walk';
-      colorHex = '#000000';
-      width = 2.0;
+    if (styleMode === 'mymaps-standard') {
+      if (walk.isSubwayWalk) {
+        colorHex = '#0097A7';
+        width = 3.131;
+      } else if (folderName === 'Other') {
+        colorHex = '#000000';
+        width = 1.2;
+      } else {
+        // Both completed year folders (2020..2026) and 'To Walk' use Google My Maps #0288D1 blue in Walks.kmz
+        colorHex = walk.originalColor || '#0288D1';
+        width = 3.131;
+      }
     } else {
-      const yr = walk.date ? walk.date.substring(0, 4) : walk.year || '2026';
-      folderName = yr === '2020' || yr === '2021' ? '2020 / 2021' : yr;
+      colorHex = dataset.settings.completedWalkColor || '#0288D1';
+      width = dataset.settings.completedWalkWidth || 3.131;
+      if (walk.isSubwayWalk) {
+        colorHex = dataset.settings.subwayWalkColor || '#0097A7';
+        width = dataset.settings.subwayWalkWidth || 3.131;
+      } else if (walk.status === 'planned') {
+        colorHex =
+          folderName === 'Other'
+            ? '#000000'
+            : dataset.settings.plannedWalkColor || '#0288D1';
+        width = folderName === 'Other' ? 1.2 : dataset.settings.plannedWalkWidth || 3.131;
+      }
+      if (walk.styleOverride?.color) colorHex = walk.styleOverride.color;
+      if (walk.styleOverride?.width) width = walk.styleOverride.width;
     }
 
-    if (walk.styleOverride?.color) colorHex = walk.styleOverride.color;
-    if (walk.styleOverride?.width) width = walk.styleOverride.width;
-
-    const styleId = registerStyle(colorHex, width);
+    const hasDesc = Boolean(walk.notes && walk.notes.trim());
+    const styleId = registerStyle(colorHex, width, hasDesc);
     const folder = ensureFolder(folderName);
-    const displayName = walk.date ? `${walk.date} ${walk.title}` : walk.title;
+    const displayName = formatMyMapsPlacemarkName(walk);
     const coordStr = walk.coordinates.map((c) => `${c[0]},${c[1]},0`).join('\n            ');
-    const descXml = walk.notes ? `\n        <description>${escapeXml(walk.notes)}</description>` : '';
+    const descXml = hasDesc ? `\n        <description>${escapeXml(walk.notes)}</description>` : '';
 
     folder.placemarks.push(`      <Placemark>
         <name>${escapeXml(displayName)}</name>${descXml}
@@ -109,19 +160,22 @@ export async function exportDatasetToKmzBlob(
   const stylesXml: string[] = [];
   for (const st of styleSet.values()) {
     const kmlColor = hexToKmlColor(st.colorHex, 'ff');
-    const normWidth = Number(st.width.toFixed(2));
-    const hiWidth = Number((st.width * 1.5).toFixed(2));
+    const normWidth = Number(st.width.toFixed(3));
+    const hiWidth = Number((st.width * 1.5).toFixed(3));
+    const balloonXml = st.hasDesc
+      ? ''
+      : `\n      <BalloonStyle>\n        <text><![CDATA[<h3>$[name]</h3>]]></text>\n      </BalloonStyle>`;
     stylesXml.push(`    <Style id="${st.id}-normal">
       <LineStyle>
         <color>${kmlColor}</color>
         <width>${normWidth}</width>
-      </LineStyle>
+      </LineStyle>${balloonXml}
     </Style>
     <Style id="${st.id}-highlight">
       <LineStyle>
         <color>${kmlColor}</color>
         <width>${hiWidth}</width>
-      </LineStyle>
+      </LineStyle>${balloonXml}
     </Style>
     <StyleMap id="${st.id}">
       <Pair>
@@ -144,16 +198,28 @@ ${folder.placemarks.join('\n')}
     </Folder>`);
   }
 
-  const kmlContent = `<?xml version="1.0" encoding="UTF-8"?>
+  const docName = options.documentName || 'Walks';
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <kml xmlns="http://www.opengis.net/kml/2.2">
   <Document>
-    <name>Walks</name>
-    <description>Exported from NYC Walks Map</description>
+    <name>${escapeXml(docName)}</name>
+    <description/>
 ${stylesXml.join('\n')}
 ${foldersXml.join('\n')}
   </Document>
 </kml>`;
+}
 
+export async function exportDatasetToKmzBlob(
+  dataset: WalkDataset,
+  boroughGeoJson?: any
+): Promise<Blob> {
+  const kmlContent = buildKmlForWalks(dataset.walks, dataset, {
+    styleMode: 'mymaps-standard',
+    includeBoroughLines: true,
+    boroughGeoJson,
+    documentName: 'Walks',
+  });
   const zip = new JSZip();
   zip.file('doc.kml', kmlContent);
   return await zip.generateAsync({
@@ -161,6 +227,57 @@ ${foldersXml.join('\n')}
     compression: 'DEFLATE',
     compressionOptions: { level: 9 },
   });
+}
+
+export async function downloadWalksForMyMaps(
+  walksToExport: WalkItem[],
+  dataset: WalkDataset,
+  options: MyMapsExportOptions = {}
+): Promise<void> {
+  if (!walksToExport || walksToExport.length === 0) return;
+  const format = options.format || 'kml';
+  const kmlContent = buildKmlForWalks(walksToExport, dataset, options);
+
+  let baseFilename = 'Walks-MyMaps-Merge';
+  if (walksToExport.length === 1) {
+    const w = walksToExport[0];
+    const raw = formatMyMapsPlacemarkName(w)
+      .replace(/[^a-zA-Z0-9_-]+/g, '_')
+      .replace(/^_|_$/g, '');
+    baseFilename = raw || 'Walk';
+  } else {
+    const folders = Array.from(
+      new Set(walksToExport.map((w) => getMyMapsFolderName(w, dataset)))
+    );
+    if (folders.length === 1) {
+      const fClean = folders[0].replace(/[^a-zA-Z0-9_-]+/g, '_');
+      baseFilename = `MyMaps_${fClean}_${walksToExport.length}_walks`;
+    } else {
+      baseFilename = `MyMaps_Merge_${walksToExport.length}_walks`;
+    }
+  }
+
+  let blob: Blob;
+  if (format === 'kmz') {
+    const zip = new JSZip();
+    zip.file('doc.kml', kmlContent);
+    blob = await zip.generateAsync({
+      type: 'blob',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 9 },
+    });
+  } else {
+    blob = new Blob([kmlContent], {
+      type: 'application/vnd.google-earth.kml+xml;charset=utf-8',
+    });
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${baseFilename}.${format}`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 export async function parseKmzFileToWalks(file: File): Promise<WalkItem[]> {
