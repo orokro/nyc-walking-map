@@ -429,32 +429,73 @@ export const App: React.FC = () => {
     setSelectedWalkId(savedId);
   };
 
-  // Mark a Planned Walk as Completed with 1 click
+  // Helper for local YYYY-MM-DD date string (avoids UTC evening rollover)
+  const getLocalIsoDate = (offsetDays = 0) => {
+    const d = new Date();
+    if (offsetDays !== 0) d.setDate(d.getDate() + offsetDays);
+    const yr = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, '0');
+    const da = String(d.getDate()).padStart(2, '0');
+    return `${yr}-${mo}-${da}`;
+  };
+
+  // Complete Planned Walk Modal States (replaces window.prompt which is unsupported in Electron)
+  const [completingWalk, setCompletingWalk] = useState<WalkItem | null>(null);
+  const [completingDate, setCompletingDate] = useState<string>(getLocalIsoDate());
+  const [completingTitle, setCompletingTitle] = useState<string>('');
+  const [completingIsSubway, setCompletingIsSubway] = useState<boolean>(false);
+  const [completingNotes, setCompletingNotes] = useState<string>('');
+  const [completingResetStyle, setCompletingResetStyle] = useState<boolean>(true);
+
+  // Open the "Mark Planned Walk as Completed" Modal
   const markPlannedWalkCompleted = (walk: WalkItem) => {
     if (!dataset) return;
-    const defaultDate = walk.date || new Date().toISOString().slice(0, 10);
-    const chosenDate = window.prompt(
-      `Mark "${walk.title}" (${walk.distanceMiles} mi) as Completed!\nEnter walk date (YYYY-MM-DD):`,
-      defaultDate
-    );
-    if (chosenDate === null) return;
-    const cleanDate = chosenDate.trim() || defaultDate;
-    const yr = cleanDate.substring(0, 4) || '2026';
+    setCompletingWalk(walk);
+    setCompletingDate(getLocalIsoDate(0));
+    setCompletingTitle(walk.title);
+    setCompletingIsSubway(walk.isSubwayWalk);
+    setCompletingNotes(walk.notes || '');
+    setCompletingResetStyle(true);
+  };
 
-    const nextWalks = dataset.walks.map((w) =>
-      w.id === walk.id
-        ? {
-            ...w,
-            status: 'completed' as const,
-            date: cleanDate,
-            year: yr,
-            manualLayerId: w.manualLayerId === 'other' ? '' : w.manualLayerId,
-          }
-        : w
-    );
+  const confirmCompletePlannedWalk = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!dataset || !completingWalk) return;
+    const cleanDate = completingDate.trim() || getLocalIsoDate(0);
+    const yr = cleanDate.substring(0, 4) || '2026';
+    const cleanTitle = completingTitle.trim() || completingWalk.title || 'Completed Walk';
+
+    const nextWalks = dataset.walks.map((w) => {
+      if (w.id !== completingWalk.id) return w;
+      const updated: WalkItem = {
+        ...w,
+        title: cleanTitle,
+        status: 'completed',
+        date: cleanDate,
+        year: yr,
+        isSubwayWalk: completingIsSubway,
+        notes: completingNotes,
+        manualLayerId: w.manualLayerId === 'other' ? '' : w.manualLayerId,
+      };
+      if (completingResetStyle) {
+        delete updated.styleOverride;
+      }
+      return updated;
+    });
+
+    // Sort chronologically
+    nextWalks.sort((a, b) => {
+      const da = a.date || '9999-99-99';
+      const db = b.date || '9999-99-99';
+      return da.localeCompare(db);
+    });
+
     const yg = yr === '2020' || yr === '2021' ? '2020 / 2021' : yr;
     setVisibleYears((prev) => ({ ...prev, [yg]: true }));
+    setExpandedYears((prev) => ({ ...prev, [yg]: true }));
     persistDataset({ ...dataset, walks: nextWalks });
+    setSelectedWalkId(completingWalk.id);
+    setCompletingWalk(null);
   };
 
   // Delete a Walk
@@ -2426,15 +2467,34 @@ export const App: React.FC = () => {
                   />
                   <div className="inspector-titles">
                     <h4>{selectedWalk.title}</h4>
-                    <span>
-                      {selectedWalk.date || 'No date'} •{' '}
-                      <strong>{selectedWalk.distanceMiles} miles</strong> •{' '}
-                      {isPlanned
-                        ? 'Planned Walk'
-                        : selectedWalk.isSubwayWalk
-                        ? 'Subway Walk'
-                        : `Year ${getAutoYearGroup(selectedWalk)}`}
-                    </span>
+                    <div className="inspector-meta-line">
+                      {!staticMode ? (
+                        <input
+                          type="date"
+                          className="inspector-inline-date"
+                          value={selectedWalk.date || ''}
+                          title="Set or change walk date"
+                          onChange={(e) => {
+                            const newDate = e.target.value;
+                            const yr = newDate && newDate.length >= 4 ? newDate.slice(0, 4) : selectedWalk.year;
+                            const nextWalks = dataset.walks.map((w) =>
+                              w.id === selectedWalk.id ? { ...w, date: newDate, year: yr } : w
+                            );
+                            persistDataset({ ...dataset, walks: nextWalks });
+                          }}
+                        />
+                      ) : (
+                        <span>{selectedWalk.date || 'No date'}</span>
+                      )}
+                      <span>
+                        • <strong>{selectedWalk.distanceMiles} miles</strong> •{' '}
+                        {isPlanned
+                          ? 'Planned Walk'
+                          : selectedWalk.isSubwayWalk
+                          ? 'Subway Walk'
+                          : `Year ${getAutoYearGroup(selectedWalk)}`}
+                      </span>
+                    </div>
                   </div>
                   <button className="close-inspector" onClick={() => setSelectedWalkId(null)}>
                     <X size={15} />
@@ -3074,6 +3134,126 @@ export const App: React.FC = () => {
                   </>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* Mark Planned Walk as Completed Modal (Replaces window.prompt so it works in Electron & Browser) */}
+          {completingWalk && (
+            <div className="complete-modal-backdrop" onClick={() => setCompletingWalk(null)}>
+              <form
+                className="complete-walk-modal"
+                onClick={(e) => e.stopPropagation()}
+                onSubmit={confirmCompletePlannedWalk}
+              >
+                <div className="complete-modal-header">
+                  <div>
+                    <h3>Mark Planned Walk as Completed</h3>
+                    <span className="complete-modal-sub">
+                      {completingWalk.distanceMiles} miles • Moves from Planned to Completed Walks
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="close-inspector"
+                    onClick={() => setCompletingWalk(null)}
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+
+                <div className="form-group">
+                  <label>Date Completed</label>
+                  <div className="complete-date-row">
+                    <input
+                      type="date"
+                      value={completingDate}
+                      onChange={(e) => setCompletingDate(e.target.value)}
+                      required
+                      autoFocus
+                    />
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      onClick={() => setCompletingDate(getLocalIsoDate(0))}
+                    >
+                      Today
+                    </button>
+                    <button
+                      type="button"
+                      className="mini-btn"
+                      onClick={() => setCompletingDate(getLocalIsoDate(-1))}
+                    >
+                      Yesterday
+                    </button>
+                    {completingWalk.date && completingWalk.date !== getLocalIsoDate(0) && (
+                      <button
+                        type="button"
+                        className="mini-btn"
+                        onClick={() => setCompletingDate(completingWalk.date)}
+                      >
+                        Planned ({completingWalk.date})
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label>Walk Title</label>
+                  <input
+                    type="text"
+                    value={completingTitle}
+                    onChange={(e) => setCompletingTitle(e.target.value)}
+                    placeholder="Walk title..."
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Notes (Optional)</label>
+                  <textarea
+                    rows={2}
+                    value={completingNotes}
+                    onChange={(e) => setCompletingNotes(e.target.value)}
+                    placeholder="Optional notes about the walk..."
+                  />
+                </div>
+
+                <div className="form-group checkbox-inline">
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={completingIsSubway}
+                      onChange={(e) => setCompletingIsSubway(e.target.checked)}
+                    />
+                    <span>Part of 100% NYC Subway Walk (Teal)</span>
+                  </label>
+                </div>
+
+                {completingWalk.styleOverride && (
+                  <div className="form-group checkbox-inline">
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={completingResetStyle}
+                        onChange={(e) => setCompletingResetStyle(e.target.checked)}
+                      />
+                      <span>Switch from Planned Gradient/Custom Style to Standard Completed Style</span>
+                    </label>
+                  </div>
+                )}
+
+                <div className="complete-modal-actions">
+                  <button
+                    type="button"
+                    className="cancel-btn"
+                    onClick={() => setCompletingWalk(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button type="submit" className="save-walk-btn">
+                    <CheckCircle2 size={16} /> Complete Walk ({completingDate || 'Today'})
+                  </button>
+                </div>
+              </form>
             </div>
           )}
         </main>
